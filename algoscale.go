@@ -1,11 +1,20 @@
 package algoscale
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"math/rand"
+	"runtime"
+	"sync"
+	"time"
 )
+
+type MetricsObserver interface {
+	ObserveSolve(iterations int, duration time.Duration, finalResidual float64, converged bool)
+}
 
 // ============================================================================
 // 1. MEMORY ABSTRACTION & STABLE MATRIX INVERSION
@@ -512,20 +521,28 @@ func (lrk *LowRankKernel) Solve(r, c []float64, maxIter int, tol float64) (*LowR
 // ============================================================================
 
 type LogSinkhornConfig struct {
-	Epsilon       float64
-	Tau1          float64
-	Tau2          float64
-	MaxIterations int
-	Tolerance     float64
+	Epsilon           float64
+	EpsilonInit       float64 // If > Epsilon, enables exponential Epsilon Annealing
+	Tau1              float64
+	Tau2              float64
+	MaxIterations     int
+	Tolerance         float64
+	EnableHistory     bool
+	OnIteration       func(iter int, residual float64, eps float64)
+	MomentumBeta      float64 // If > 0, enables Nesterov / Heavy-Ball Momentum Acceleration
+	SparseThreshold   float64 // If > 0, truncates cost terms c_ij > SparseThreshold
+	StagnationWindow  int     // Iteration window to check for stagnant residual
+	StagnationTol     float64 // Minimum required residual decrease over StagnationWindow
 }
 
 type LogSinkhornResult struct {
-	F             []float64
-	G             []float64
-	Iterations    int
-	FinalResidual float64
-	Converged     bool
-	Cost          float64
+	F               []float64
+	G               []float64
+	Iterations      int
+	FinalResidual   float64
+	ResidualHistory []float64
+	Converged       bool
+	Cost            float64
 }
 
 type CostFunction func(i, j int) float64
@@ -536,6 +553,21 @@ func LogSinkhornStreaming(
 	costFn CostFunction,
 	cfg LogSinkhornConfig,
 ) (*LogSinkhornResult, error) {
+	return LogSinkhornStreamingContext(context.Background(), M, N, logR, logC, costFn, cfg, nil)
+}
+
+func LogSinkhornStreamingContext(
+	ctx context.Context,
+	M, N int,
+	logR, logC []float64,
+	costFn CostFunction,
+	cfg LogSinkhornConfig,
+	observer MetricsObserver,
+) (*LogSinkhornResult, error) {
+	startTime := time.Now()
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if M <= 0 || N <= 0 {
 		return nil, errors.New("dimensi M dan N harus bernilai positif")
 	}
@@ -563,30 +595,149 @@ func LogSinkhornStreaming(
 	gPrev := make([]float64, N)
 	buffer := make([]float64, int(math.Max(float64(M), float64(N))))
 
+	var resHistory []float64
+	if cfg.EnableHistory {
+		resHistory = make([]float64, 0, cfg.MaxIterations)
+	}
+
 	var iter int
 	var residual float64
 	var converged bool
 
+	epsInit := cfg.EpsilonInit
+	useAnnealing := epsInit > cfg.Epsilon
+
+	beta := cfg.MomentumBeta
+	hasMomentum := beta > 0.0 && beta < 1.0
+
 	for iter = 0; iter < cfg.MaxIterations; iter++ {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
+		if useAnnealing {
+			decayFactor := float64(iter) / float64(cfg.MaxIterations)
+			eps = cfg.Epsilon + (epsInit-cfg.Epsilon)*math.Exp(-5.0*decayFactor)
+			invEps = 1.0 / eps
+			kappa1 = cfg.Tau1 / (cfg.Tau1 + eps)
+			kappa2 = cfg.Tau2 / (cfg.Tau2 + eps)
+			if math.IsInf(cfg.Tau1, 1) { kappa1 = 1.0 }
+			if math.IsInf(cfg.Tau2, 1) { kappa2 = 1.0 }
+		}
+
 		copy(fPrev, f)
 		copy(gPrev, g)
 
-		for i := 0; i < M; i++ {
-			for j := 0; j < N; j++ {
-				c_ij := costFn(i, j)
-				buffer[j] = (g[j] - c_ij) * invEps
-			}
-			lse := LogSumExpWeighted(buffer[:N], logC)
-			f[i] = kappa1 * (-eps*lse + eps*logR[i])
+		numWorkers := runtime.GOMAXPROCS(0)
+		if numWorkers < 1 {
+			numWorkers = 1
 		}
 
-		for j := 0; j < N; j++ {
-			for i := 0; i < M; i++ {
-				c_ij := costFn(i, j)
-				buffer[i] = (f[i] - c_ij) * invEps
+		sThresh := cfg.SparseThreshold
+		hasSparse := sThresh > 0.0
+
+		if M >= 100 || N >= 100 {
+			var wg sync.WaitGroup
+
+			chunkSizeM := (M + numWorkers - 1) / numWorkers
+			for w := 0; w < numWorkers; w++ {
+				start := w * chunkSizeM
+				end := start + chunkSizeM
+				if start >= M {
+					break
+				}
+				if end > M {
+					end = M
+				}
+				wg.Add(1)
+				go func(startI, endI int) {
+					defer wg.Done()
+					buf := make([]float64, N)
+					for i := startI; i < endI; i++ {
+						for j := 0; j < N; j++ {
+							c_ij := costFn(i, j)
+							if hasSparse && c_ij > sThresh {
+								buf[j] = -1e9
+							} else {
+								buf[j] = (g[j] - c_ij) * invEps
+							}
+						}
+						lse := LogSumExpWeighted(buf, logC)
+						f[i] = kappa1 * (-eps*lse + eps*logR[i])
+					}
+				}(start, end)
 			}
-			lse := LogSumExpWeighted(buffer[:M], logR)
-			g[j] = kappa2 * (-eps*lse + eps*logC[j])
+			wg.Wait()
+
+			chunkSizeN := (N + numWorkers - 1) / numWorkers
+			for w := 0; w < numWorkers; w++ {
+				start := w * chunkSizeN
+				end := start + chunkSizeN
+				if start >= N {
+					break
+				}
+				if end > N {
+					end = N
+				}
+				wg.Add(1)
+				go func(startJ, endJ int) {
+					defer wg.Done()
+					buf := make([]float64, M)
+					for j := startJ; j < endJ; j++ {
+						for i := 0; i < M; i++ {
+							c_ij := costFn(i, j)
+							if hasSparse && c_ij > sThresh {
+								buf[i] = -1e9
+							} else {
+								buf[i] = (f[i] - c_ij) * invEps
+							}
+						}
+						lse := LogSumExpWeighted(buf, logR)
+						g[j] = kappa2 * (-eps*lse + eps*logC[j])
+					}
+				}(start, end)
+			}
+			wg.Wait()
+		} else {
+			sThresh := cfg.SparseThreshold
+			hasSparse := sThresh > 0.0
+
+			for i := 0; i < M; i++ {
+				for j := 0; j < N; j++ {
+					c_ij := costFn(i, j)
+					if hasSparse && c_ij > sThresh {
+						buffer[j] = -1e9
+					} else {
+						buffer[j] = (g[j] - c_ij) * invEps
+					}
+				}
+				lse := LogSumExpWeighted(buffer[:N], logC)
+				f[i] = kappa1 * (-eps*lse + eps*logR[i])
+			}
+
+			for j := 0; j < N; j++ {
+				for i := 0; i < M; i++ {
+					c_ij := costFn(i, j)
+					if hasSparse && c_ij > sThresh {
+						buffer[i] = -1e9
+					} else {
+						buffer[i] = (f[i] - c_ij) * invEps
+					}
+				}
+				lse := LogSumExpWeighted(buffer[:M], logR)
+				g[j] = kappa2 * (-eps*lse + eps*logC[j])
+			}
+		}
+
+		if hasMomentum && iter > 0 {
+			for i := 0; i < M; i++ {
+				f[i] = f[i] + beta*(f[i]-fPrev[i])
+			}
+			for j := 0; j < N; j++ {
+				g[j] = g[j] + beta*(g[j]-gPrev[j])
+			}
 		}
 
 		resF := 0.0
@@ -601,10 +752,29 @@ func LogSinkhornStreaming(
 		}
 
 		residual = math.Max(resF, resG)
+		if cfg.EnableHistory || cfg.StagnationWindow > 0 {
+			resHistory = append(resHistory, residual)
+		}
+		if cfg.OnIteration != nil {
+			cfg.OnIteration(iter, residual, eps)
+		}
+
 		if residual < cfg.Tolerance {
 			converged = true
 			iter++
 			break
+		}
+
+		// Early stopping on residual stagnation
+		w := cfg.StagnationWindow
+		stTol := cfg.StagnationTol
+		if w > 0 && len(resHistory) >= w && stTol > 0 {
+			pastRes := resHistory[len(resHistory)-w]
+			if pastRes-residual < stTol {
+				converged = true
+				iter++
+				break
+			}
 		}
 	}
 
@@ -618,14 +788,68 @@ func LogSinkhornStreaming(
 		}
 	}
 
-	return &LogSinkhornResult{
-		F:             f,
-		G:             g,
-		Iterations:    iter,
-		FinalResidual: residual,
-		Converged:     converged,
-		Cost:          totalCost,
-	}, nil
+	res := &LogSinkhornResult{
+		F:               f,
+		G:               g,
+		Iterations:      iter,
+		FinalResidual:   residual,
+		ResidualHistory: resHistory,
+		Converged:       converged,
+		Cost:            totalCost,
+	}
+
+	if observer != nil {
+		observer.ObserveSolve(iter, time.Since(startTime), residual, converged)
+	}
+
+	return res, nil
+}
+
+// ToDenseMatrix constructs the dense transport matrix P_ij = exp((f_i + g_j - c_ij)/eps + logR_i + logC_j)
+func (res *LogSinkhornResult) ToDenseMatrix(
+	M, N int,
+	logR, logC []float64,
+	costFn CostFunction,
+	eps float64,
+) (*Matrix, error) {
+	if res == nil {
+		return nil, errors.New("result tidak boleh nil")
+	}
+	if len(res.F) != M || len(res.G) != N {
+		return nil, fmt.Errorf("dimensi F/G mismatch dengan M (%d), N (%d)", M, N)
+	}
+	if eps <= 0 {
+		return nil, errors.New("epsilon harus bernilai positif (> 0)")
+	}
+
+	invEps := 1.0 / eps
+	P := NewMatrix(M, N)
+	for i := 0; i < M; i++ {
+		offset := i * N
+		for j := 0; j < N; j++ {
+			c_ij := costFn(i, j)
+			logP_ij := (res.F[i] + res.G[j] - c_ij)*invEps + logR[i] + logC[j]
+			P.Data[offset+j] = math.Exp(logP_ij)
+		}
+	}
+	return P, nil
+}
+
+// ExportJSON serializes LogSinkhornResult into JSON bytes.
+func (res *LogSinkhornResult) ExportJSON() ([]byte, error) {
+	if res == nil {
+		return nil, errors.New("result tidak boleh nil")
+	}
+	return json.Marshal(res)
+}
+
+// ImportJSON deserializes JSON bytes into a LogSinkhornResult.
+func ImportJSON(data []byte) (*LogSinkhornResult, error) {
+	var res LogSinkhornResult
+	if err := json.Unmarshal(data, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
 }
 
 // SinkhornDivergence menghitung metrik jarak debiased S_eps(X, Y)
@@ -768,23 +992,58 @@ func ComputeBarycenterLogDomain(
 	for iter = 0; iter < cfg.MaxIterations; iter++ {
 		copy(logQPrev, logQ)
 
-		for k := 0; k < K; k++ {
-			if weights[k] == 0.0 { continue }
-			for i := 0; i < M; i++ {
-				for j := 0; j < N; j++ {
-					bufN[j] = (g[k][j] - costFn(i, j)) * invEps
-				}
-				f[k][i] = eps*logQ[i] - eps*LogSumExp(bufN)
+		if K > 1 {
+			var wg sync.WaitGroup
+			for k := 0; k < K; k++ {
+				if weights[k] == 0.0 { continue }
+				wg.Add(1)
+				go func(kIdx int) {
+					defer wg.Done()
+					buf := make([]float64, N)
+					for i := 0; i < M; i++ {
+						for j := 0; j < N; j++ {
+							buf[j] = (g[kIdx][j] - costFn(i, j)) * invEps
+						}
+						f[kIdx][i] = eps*logQ[i] - eps*LogSumExp(buf)
+					}
+				}(k)
 			}
-		}
+			wg.Wait()
 
-		for k := 0; k < K; k++ {
-			if weights[k] == 0.0 { continue }
-			for j := 0; j < N; j++ {
+			for k := 0; k < K; k++ {
+				if weights[k] == 0.0 { continue }
+				wg.Add(1)
+				go func(kIdx int) {
+					defer wg.Done()
+					buf := make([]float64, M)
+					for j := 0; j < N; j++ {
+						for i := 0; i < M; i++ {
+							buf[i] = (f[kIdx][i] - costFn(i, j)) * invEps
+						}
+						g[kIdx][j] = eps*logP[kIdx][j] - eps*LogSumExp(buf)
+					}
+				}(k)
+			}
+			wg.Wait()
+		} else {
+			for k := 0; k < K; k++ {
+				if weights[k] == 0.0 { continue }
 				for i := 0; i < M; i++ {
-					bufM[i] = (f[k][i] - costFn(i, j)) * invEps
+					for j := 0; j < N; j++ {
+						bufN[j] = (g[k][j] - costFn(i, j)) * invEps
+					}
+					f[k][i] = eps*logQ[i] - eps*LogSumExp(bufN)
 				}
-				g[k][j] = eps*logP[k][j] - eps*LogSumExp(bufM)
+			}
+
+			for k := 0; k < K; k++ {
+				if weights[k] == 0.0 { continue }
+				for j := 0; j < N; j++ {
+					for i := 0; i < M; i++ {
+						bufM[i] = (f[k][i] - costFn(i, j)) * invEps
+					}
+					g[k][j] = eps*logP[k][j] - eps*LogSumExp(bufM)
+				}
 			}
 		}
 
@@ -957,12 +1216,18 @@ func StreamingContinuousSinkhorn(
 
 		for l := 0; l < L; l++ {
 			g := gradTheta[l]
+			if math.IsNaN(g) || math.IsInf(g, 0) {
+				g = 0.0
+			}
 			mTheta[l] = beta1*mTheta[l] + (1.0-beta1)*g
 			vTheta[l] = beta2*vTheta[l] + (1.0-beta2)*g*g
 			mHat := mTheta[l] / (1.0 - math.Pow(beta1, float64(step)))
 			vHat := vTheta[l] / (1.0 - math.Pow(beta2, float64(step)))
 
-			theta[l] += cfg.LearningRate * mHat / (math.Sqrt(vHat) + epsAdam)
+			update := cfg.LearningRate * mHat / (math.Sqrt(vHat) + epsAdam)
+			if !math.IsNaN(update) && !math.IsInf(update, 0) {
+				theta[l] += update
+			}
 		}
 	}
 

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"math/rand"
 	
-	"your_project_path/algoscale" // atau package main jika digabung
+	"algoscale"
 )
 
 func main() {
