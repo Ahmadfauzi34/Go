@@ -1,13 +1,20 @@
 package algoscale
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"math/rand"
 	"runtime"
 	"sync"
+	"time"
 )
+
+type MetricsObserver interface {
+	ObserveSolve(iterations int, duration time.Duration, finalResidual float64, converged bool)
+}
 
 // ============================================================================
 // 1. MEMORY ABSTRACTION & STABLE MATRIX INVERSION
@@ -546,6 +553,21 @@ func LogSinkhornStreaming(
 	costFn CostFunction,
 	cfg LogSinkhornConfig,
 ) (*LogSinkhornResult, error) {
+	return LogSinkhornStreamingContext(context.Background(), M, N, logR, logC, costFn, cfg, nil)
+}
+
+func LogSinkhornStreamingContext(
+	ctx context.Context,
+	M, N int,
+	logR, logC []float64,
+	costFn CostFunction,
+	cfg LogSinkhornConfig,
+	observer MetricsObserver,
+) (*LogSinkhornResult, error) {
+	startTime := time.Now()
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if M <= 0 || N <= 0 {
 		return nil, errors.New("dimensi M dan N harus bernilai positif")
 	}
@@ -571,8 +593,6 @@ func LogSinkhornStreaming(
 	g := make([]float64, N)
 	fPrev := make([]float64, M)
 	gPrev := make([]float64, N)
-	fPrevPrev := make([]float64, M)
-	gPrevPrev := make([]float64, N)
 	buffer := make([]float64, int(math.Max(float64(M), float64(N))))
 
 	var resHistory []float64
@@ -591,6 +611,12 @@ func LogSinkhornStreaming(
 	hasMomentum := beta > 0.0 && beta < 1.0
 
 	for iter = 0; iter < cfg.MaxIterations; iter++ {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
 		if useAnnealing {
 			decayFactor := float64(iter) / float64(cfg.MaxIterations)
 			eps = cfg.Epsilon + (epsInit-cfg.Epsilon)*math.Exp(-5.0*decayFactor)
@@ -601,8 +627,6 @@ func LogSinkhornStreaming(
 			if math.IsInf(cfg.Tau2, 1) { kappa2 = 1.0 }
 		}
 
-		copy(fPrevPrev, fPrev)
-		copy(gPrevPrev, gPrev)
 		copy(fPrev, f)
 		copy(gPrev, g)
 
@@ -610,6 +634,9 @@ func LogSinkhornStreaming(
 		if numWorkers < 1 {
 			numWorkers = 1
 		}
+
+		sThresh := cfg.SparseThreshold
+		hasSparse := sThresh > 0.0
 
 		if M >= 100 || N >= 100 {
 			var wg sync.WaitGroup
@@ -630,7 +657,12 @@ func LogSinkhornStreaming(
 					buf := make([]float64, N)
 					for i := startI; i < endI; i++ {
 						for j := 0; j < N; j++ {
-							buf[j] = (g[j] - costFn(i, j)) * invEps
+							c_ij := costFn(i, j)
+							if hasSparse && c_ij > sThresh {
+								buf[j] = -1e9
+							} else {
+								buf[j] = (g[j] - c_ij) * invEps
+							}
 						}
 						lse := LogSumExpWeighted(buf, logC)
 						f[i] = kappa1 * (-eps*lse + eps*logR[i])
@@ -655,7 +687,12 @@ func LogSinkhornStreaming(
 					buf := make([]float64, M)
 					for j := startJ; j < endJ; j++ {
 						for i := 0; i < M; i++ {
-							buf[i] = (f[i] - costFn(i, j)) * invEps
+							c_ij := costFn(i, j)
+							if hasSparse && c_ij > sThresh {
+								buf[i] = -1e9
+							} else {
+								buf[i] = (f[i] - c_ij) * invEps
+							}
 						}
 						lse := LogSumExpWeighted(buf, logR)
 						g[j] = kappa2 * (-eps*lse + eps*logC[j])
@@ -715,7 +752,7 @@ func LogSinkhornStreaming(
 		}
 
 		residual = math.Max(resF, resG)
-		if cfg.EnableHistory {
+		if cfg.EnableHistory || cfg.StagnationWindow > 0 {
 			resHistory = append(resHistory, residual)
 		}
 		if cfg.OnIteration != nil {
@@ -751,7 +788,7 @@ func LogSinkhornStreaming(
 		}
 	}
 
-	return &LogSinkhornResult{
+	res := &LogSinkhornResult{
 		F:               f,
 		G:               g,
 		Iterations:      iter,
@@ -759,7 +796,13 @@ func LogSinkhornStreaming(
 		ResidualHistory: resHistory,
 		Converged:       converged,
 		Cost:            totalCost,
-	}, nil
+	}
+
+	if observer != nil {
+		observer.ObserveSolve(iter, time.Since(startTime), residual, converged)
+	}
+
+	return res, nil
 }
 
 // ToDenseMatrix constructs the dense transport matrix P_ij = exp((f_i + g_j - c_ij)/eps + logR_i + logC_j)
@@ -790,6 +833,23 @@ func (res *LogSinkhornResult) ToDenseMatrix(
 		}
 	}
 	return P, nil
+}
+
+// ExportJSON serializes LogSinkhornResult into JSON bytes.
+func (res *LogSinkhornResult) ExportJSON() ([]byte, error) {
+	if res == nil {
+		return nil, errors.New("result tidak boleh nil")
+	}
+	return json.Marshal(res)
+}
+
+// ImportJSON deserializes JSON bytes into a LogSinkhornResult.
+func ImportJSON(data []byte) (*LogSinkhornResult, error) {
+	var res LogSinkhornResult
+	if err := json.Unmarshal(data, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
 }
 
 // SinkhornDivergence menghitung metrik jarak debiased S_eps(X, Y)
