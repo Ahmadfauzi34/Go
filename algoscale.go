@@ -1084,12 +1084,18 @@ func StreamingContinuousSinkhorn(
 
 		for l := 0; l < L; l++ {
 			g := gradTheta[l]
+			if math.IsNaN(g) || math.IsInf(g, 0) {
+				g = 0.0
+			}
 			mTheta[l] = beta1*mTheta[l] + (1.0-beta1)*g
 			vTheta[l] = beta2*vTheta[l] + (1.0-beta2)*g*g
 			mHat := mTheta[l] / (1.0 - math.Pow(beta1, float64(step)))
 			vHat := vTheta[l] / (1.0 - math.Pow(beta2, float64(step)))
 
-			theta[l] += cfg.LearningRate * mHat / (math.Sqrt(vHat) + epsAdam)
+			update := cfg.LearningRate * mHat / (math.Sqrt(vHat) + epsAdam)
+			if !math.IsNaN(update) && !math.IsInf(update, 0) {
+				theta[l] += update
+			}
 		}
 	}
 
