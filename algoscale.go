@@ -514,14 +514,18 @@ func (lrk *LowRankKernel) Solve(r, c []float64, maxIter int, tol float64) (*LowR
 // ============================================================================
 
 type LogSinkhornConfig struct {
-	Epsilon       float64
-	EpsilonInit   float64 // If > Epsilon, enables exponential Epsilon Annealing
-	Tau1          float64
-	Tau2          float64
-	MaxIterations int
-	Tolerance     float64
-	EnableHistory bool
-	OnIteration   func(iter int, residual float64, eps float64)
+	Epsilon           float64
+	EpsilonInit       float64 // If > Epsilon, enables exponential Epsilon Annealing
+	Tau1              float64
+	Tau2              float64
+	MaxIterations     int
+	Tolerance         float64
+	EnableHistory     bool
+	OnIteration       func(iter int, residual float64, eps float64)
+	MomentumBeta      float64 // If > 0, enables Nesterov / Heavy-Ball Momentum Acceleration
+	SparseThreshold   float64 // If > 0, truncates cost terms c_ij > SparseThreshold
+	StagnationWindow  int     // Iteration window to check for stagnant residual
+	StagnationTol     float64 // Minimum required residual decrease over StagnationWindow
 }
 
 type LogSinkhornResult struct {
@@ -567,6 +571,8 @@ func LogSinkhornStreaming(
 	g := make([]float64, N)
 	fPrev := make([]float64, M)
 	gPrev := make([]float64, N)
+	fPrevPrev := make([]float64, M)
+	gPrevPrev := make([]float64, N)
 	buffer := make([]float64, int(math.Max(float64(M), float64(N))))
 
 	var resHistory []float64
@@ -581,9 +587,11 @@ func LogSinkhornStreaming(
 	epsInit := cfg.EpsilonInit
 	useAnnealing := epsInit > cfg.Epsilon
 
+	beta := cfg.MomentumBeta
+	hasMomentum := beta > 0.0 && beta < 1.0
+
 	for iter = 0; iter < cfg.MaxIterations; iter++ {
 		if useAnnealing {
-			// Exponential decay from epsInit down to cfg.Epsilon over MaxIterations
 			decayFactor := float64(iter) / float64(cfg.MaxIterations)
 			eps = cfg.Epsilon + (epsInit-cfg.Epsilon)*math.Exp(-5.0*decayFactor)
 			invEps = 1.0 / eps
@@ -593,6 +601,8 @@ func LogSinkhornStreaming(
 			if math.IsInf(cfg.Tau2, 1) { kappa2 = 1.0 }
 		}
 
+		copy(fPrevPrev, fPrev)
+		copy(gPrevPrev, gPrev)
 		copy(fPrev, f)
 		copy(gPrev, g)
 
@@ -654,10 +664,17 @@ func LogSinkhornStreaming(
 			}
 			wg.Wait()
 		} else {
+			sThresh := cfg.SparseThreshold
+			hasSparse := sThresh > 0.0
+
 			for i := 0; i < M; i++ {
 				for j := 0; j < N; j++ {
 					c_ij := costFn(i, j)
-					buffer[j] = (g[j] - c_ij) * invEps
+					if hasSparse && c_ij > sThresh {
+						buffer[j] = -1e9
+					} else {
+						buffer[j] = (g[j] - c_ij) * invEps
+					}
 				}
 				lse := LogSumExpWeighted(buffer[:N], logC)
 				f[i] = kappa1 * (-eps*lse + eps*logR[i])
@@ -666,10 +683,23 @@ func LogSinkhornStreaming(
 			for j := 0; j < N; j++ {
 				for i := 0; i < M; i++ {
 					c_ij := costFn(i, j)
-					buffer[i] = (f[i] - c_ij) * invEps
+					if hasSparse && c_ij > sThresh {
+						buffer[i] = -1e9
+					} else {
+						buffer[i] = (f[i] - c_ij) * invEps
+					}
 				}
 				lse := LogSumExpWeighted(buffer[:M], logR)
 				g[j] = kappa2 * (-eps*lse + eps*logC[j])
+			}
+		}
+
+		if hasMomentum && iter > 0 {
+			for i := 0; i < M; i++ {
+				f[i] = f[i] + beta*(f[i]-fPrev[i])
+			}
+			for j := 0; j < N; j++ {
+				g[j] = g[j] + beta*(g[j]-gPrev[j])
 			}
 		}
 
@@ -697,6 +727,18 @@ func LogSinkhornStreaming(
 			iter++
 			break
 		}
+
+		// Early stopping on residual stagnation
+		w := cfg.StagnationWindow
+		stTol := cfg.StagnationTol
+		if w > 0 && len(resHistory) >= w && stTol > 0 {
+			pastRes := resHistory[len(resHistory)-w]
+			if pastRes-residual < stTol {
+				converged = true
+				iter++
+				break
+			}
+		}
 	}
 
 	totalCost := 0.0
@@ -718,6 +760,36 @@ func LogSinkhornStreaming(
 		Converged:       converged,
 		Cost:            totalCost,
 	}, nil
+}
+
+// ToDenseMatrix constructs the dense transport matrix P_ij = exp((f_i + g_j - c_ij)/eps + logR_i + logC_j)
+func (res *LogSinkhornResult) ToDenseMatrix(
+	M, N int,
+	logR, logC []float64,
+	costFn CostFunction,
+	eps float64,
+) (*Matrix, error) {
+	if res == nil {
+		return nil, errors.New("result tidak boleh nil")
+	}
+	if len(res.F) != M || len(res.G) != N {
+		return nil, fmt.Errorf("dimensi F/G mismatch dengan M (%d), N (%d)", M, N)
+	}
+	if eps <= 0 {
+		return nil, errors.New("epsilon harus bernilai positif (> 0)")
+	}
+
+	invEps := 1.0 / eps
+	P := NewMatrix(M, N)
+	for i := 0; i < M; i++ {
+		offset := i * N
+		for j := 0; j < N; j++ {
+			c_ij := costFn(i, j)
+			logP_ij := (res.F[i] + res.G[j] - c_ij)*invEps + logR[i] + logC[j]
+			P.Data[offset+j] = math.Exp(logP_ij)
+		}
+	}
+	return P, nil
 }
 
 // SinkhornDivergence menghitung metrik jarak debiased S_eps(X, Y)
