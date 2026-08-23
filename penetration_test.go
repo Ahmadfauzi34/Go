@@ -1,6 +1,7 @@
 package algoscale
 
 import (
+	"context"
 	"math"
 	"math/rand"
 	"runtime"
@@ -253,4 +254,130 @@ func TestPenetration_7_AsymmetricNonConvexMetrics(t *testing.T) {
 	if div < 0 {
 		t.Errorf("Debiased divergence returned negative value: %f", div)
 	}
+}
+
+// 💣 8. Extreme Large Dimension & Memory Allocation Limit
+func TestPenetration_8_ExtremelyLargeDimensionOverflow(t *testing.T) {
+	M, N := 1000, 1000
+	logR := make([]float64, M)
+	logC := make([]float64, N)
+	for i := range logR { logR[i] = -math.Log(float64(M)) }
+	for j := range logC { logC[j] = -math.Log(float64(N)) }
+
+	costFn := func(i, j int) float64 {
+		return float64((i - j) * (i - j)) * 0.0001
+	}
+
+	cfg := LogSinkhornConfig{
+		Epsilon:       0.2,
+		Tau1:          1.0,
+		Tau2:          1.0,
+		MaxIterations: 5,
+		Tolerance:     1e-3,
+	}
+
+	res, err := LogSinkhornStreaming(M, N, logR, logC, costFn, cfg)
+	if err != nil {
+		t.Fatalf("LogSinkhornStreaming failed on large dimension: %v", err)
+	}
+	if len(res.F) != M || len(res.G) != N {
+		t.Fatalf("Dimension mismatch for large matrix solve")
+	}
+}
+
+// ☣️ 9. Infinity and NaN Injection in Cost Function
+func TestPenetration_9_InfAndNaNInCostFunction(t *testing.T) {
+	M, N := 4, 4
+	logR := make([]float64, M)
+	logC := make([]float64, N)
+	for i := range logR { logR[i] = -math.Log(float64(M)) }
+	for j := range logC { logC[j] = -math.Log(float64(N)) }
+
+	// Cost function injecting +Inf and NaN
+	costFn := func(i, j int) float64 {
+		if i == 0 && j == 0 {
+			return math.Inf(1)
+		}
+		if i == 1 && j == 1 {
+			return math.NaN()
+		}
+		return float64((i - j) * (i - j))
+	}
+
+	cfg := LogSinkhornConfig{
+		Epsilon:       0.1,
+		Tau1:          1.0,
+		Tau2:          1.0,
+		MaxIterations: 10,
+		Tolerance:     1e-4,
+	}
+
+	// Should execute without panicking
+	res, err := LogSinkhornStreaming(M, N, logR, logC, costFn, cfg)
+	if err != nil {
+		t.Logf("Handled cost function Inf/NaN gracefully with error: %v", err)
+	} else if res != nil {
+		t.Logf("Handled cost function Inf/NaN with result cost: %f", res.Cost)
+	}
+}
+
+// ❄️ 10. Extreme Epsilon Underflow/Overflow ($10^{-300}$)
+func TestPenetration_10_EpsilonUnderflowInfinity(t *testing.T) {
+	M, N := 3, 3
+	logR := make([]float64, M)
+	logC := make([]float64, N)
+	for i := range logR { logR[i] = -math.Log(float64(M)) }
+	for j := range logC { logC[j] = -math.Log(float64(N)) }
+
+	costFn := func(i, j int) float64 { return float64(i + j) }
+
+	// Extreme small epsilon close to float64 minimum
+	cfg := LogSinkhornConfig{
+		Epsilon:       1e-300,
+		Tau1:          1.0,
+		Tau2:          1.0,
+		MaxIterations: 10,
+		Tolerance:     1e-4,
+	}
+
+	res, err := LogSinkhornStreaming(M, N, logR, logC, costFn, cfg)
+	if err != nil {
+		t.Logf("Extreme epsilon handled with error: %v", err)
+	} else if res != nil {
+		t.Logf("Extreme epsilon execution completed, converged: %t", res.Converged)
+	}
+}
+
+// ⚡ 11. Concurrent Context Cancellation Stress
+func TestPenetration_11_ConcurrentContextCancellationRace(t *testing.T) {
+	const goroutines = 20
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+
+	for g := 0; g < goroutines; g++ {
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), time.Duration(rand.Intn(5))*time.Millisecond)
+			defer cancel()
+
+			M, N := 50, 50
+			logR := make([]float64, M)
+			logC := make([]float64, N)
+			for i := range logR { logR[i] = -math.Log(float64(M)) }
+			for j := range logC { logC[j] = -math.Log(float64(N)) }
+
+			costFn := func(i, j int) float64 { return float64((i - j) * (i - j)) }
+			cfg := LogSinkhornConfig{
+				Epsilon:       0.1,
+				Tau1:          1.0,
+				Tau2:          1.0,
+				MaxIterations: 200,
+				Tolerance:     1e-6,
+			}
+
+			_, _ = LogSinkhornStreamingContext(ctx, M, N, logR, logC, costFn, cfg, nil)
+		}()
+	}
+
+	wg.Wait()
 }
