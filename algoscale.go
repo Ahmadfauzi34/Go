@@ -1122,6 +1122,9 @@ func StreamingContinuousSinkhorn(
 	dim int,
 	cfg StreamingConfig,
 ) (float64, error) {
+	if sampleX == nil || sampleY == nil {
+		return 0, errors.New("sampler sampleX dan sampleY tidak boleh nil")
+	}
 	if dim <= 0 || cfg.BatchSize <= 0 || cfg.Steps <= 0 {
 		return 0, errors.New("parameter konfigurasi tidak valid")
 	}
