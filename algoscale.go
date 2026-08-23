@@ -618,6 +618,7 @@ func LogSinkhornStreamingContext(
 		}
 
 		if useAnnealing {
+			epsPrev := eps
 			decayFactor := float64(iter) / float64(cfg.MaxIterations)
 			eps = cfg.Epsilon + (epsInit-cfg.Epsilon)*math.Exp(-5.0*decayFactor)
 			invEps = 1.0 / eps
@@ -625,6 +626,16 @@ func LogSinkhornStreamingContext(
 			kappa2 = cfg.Tau2 / (cfg.Tau2 + eps)
 			if math.IsInf(cfg.Tau1, 1) { kappa1 = 1.0 }
 			if math.IsInf(cfg.Tau2, 1) { kappa2 = 1.0 }
+
+			if iter > 0 && epsPrev > 0 {
+				scale := eps / epsPrev
+				for i := 0; i < M; i++ {
+					f[i] *= scale
+				}
+				for j := 0; j < N; j++ {
+					g[j] *= scale
+				}
+			}
 		}
 
 		copy(fPrev, f)
