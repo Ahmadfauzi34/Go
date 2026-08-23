@@ -618,6 +618,7 @@ func LogSinkhornStreamingContext(
 		}
 
 		if useAnnealing {
+			epsPrev := eps
 			decayFactor := float64(iter) / float64(cfg.MaxIterations)
 			eps = cfg.Epsilon + (epsInit-cfg.Epsilon)*math.Exp(-5.0*decayFactor)
 			invEps = 1.0 / eps
@@ -625,6 +626,16 @@ func LogSinkhornStreamingContext(
 			kappa2 = cfg.Tau2 / (cfg.Tau2 + eps)
 			if math.IsInf(cfg.Tau1, 1) { kappa1 = 1.0 }
 			if math.IsInf(cfg.Tau2, 1) { kappa2 = 1.0 }
+
+			if iter > 0 && epsPrev > 0 {
+				scale := eps / epsPrev
+				for i := 0; i < M; i++ {
+					f[i] *= scale
+				}
+				for j := 0; j < N; j++ {
+					g[j] *= scale
+				}
+			}
 		}
 
 		copy(fPrev, f)
@@ -664,7 +675,7 @@ func LogSinkhornStreamingContext(
 								buf[j] = (g[j] - c_ij) * invEps
 							}
 						}
-						lse := LogSumExpWeighted(buf, logC)
+						lse := LogSumExp(buf)
 						f[i] = kappa1 * (-eps*lse + eps*logR[i])
 					}
 				}(start, end)
@@ -694,7 +705,7 @@ func LogSinkhornStreamingContext(
 								buf[i] = (f[i] - c_ij) * invEps
 							}
 						}
-						lse := LogSumExpWeighted(buf, logR)
+						lse := LogSumExp(buf)
 						g[j] = kappa2 * (-eps*lse + eps*logC[j])
 					}
 				}(start, end)
@@ -713,7 +724,7 @@ func LogSinkhornStreamingContext(
 						buffer[j] = (g[j] - c_ij) * invEps
 					}
 				}
-				lse := LogSumExpWeighted(buffer[:N], logC)
+				lse := LogSumExp(buffer[:N])
 				f[i] = kappa1 * (-eps*lse + eps*logR[i])
 			}
 
@@ -726,7 +737,7 @@ func LogSinkhornStreamingContext(
 						buffer[i] = (f[i] - c_ij) * invEps
 					}
 				}
-				lse := LogSumExpWeighted(buffer[:M], logR)
+				lse := LogSumExp(buffer[:M])
 				g[j] = kappa2 * (-eps*lse + eps*logC[j])
 			}
 		}
@@ -782,7 +793,7 @@ func LogSinkhornStreamingContext(
 	for i := 0; i < M; i++ {
 		for j := 0; j < N; j++ {
 			c_ij := costFn(i, j)
-			logP_ij := (f[i] + g[j] - c_ij)*invEps + logR[i] + logC[j]
+			logP_ij := (f[i] + g[j] - c_ij) * invEps
 			p_ij := math.Exp(logP_ij)
 			totalCost += p_ij * c_ij
 		}
@@ -828,7 +839,7 @@ func (res *LogSinkhornResult) ToDenseMatrix(
 		offset := i * N
 		for j := 0; j < N; j++ {
 			c_ij := costFn(i, j)
-			logP_ij := (res.F[i] + res.G[j] - c_ij)*invEps + logR[i] + logC[j]
+			logP_ij := (res.F[i] + res.G[j] - c_ij) * invEps
 			P.Data[offset+j] = math.Exp(logP_ij)
 		}
 	}
