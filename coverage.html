@@ -1,0 +1,1433 @@
+
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+		<title>algoscale: Go Coverage Report</title>
+		<style>
+			body {
+				background: black;
+				color: rgb(80, 80, 80);
+			}
+			body, pre, #legend span {
+				font-family: Menlo, monospace;
+				font-weight: bold;
+			}
+			#topbar {
+				background: black;
+				position: fixed;
+				top: 0; left: 0; right: 0;
+				height: 42px;
+				border-bottom: 1px solid rgb(80, 80, 80);
+			}
+			#content {
+				margin-top: 50px;
+			}
+			#nav, #legend {
+				float: left;
+				margin-left: 10px;
+			}
+			#legend {
+				margin-top: 12px;
+			}
+			#nav {
+				margin-top: 10px;
+			}
+			#legend span {
+				margin: 0 5px;
+			}
+			.cov0 { color: rgb(192, 0, 0) }
+.cov1 { color: rgb(128, 128, 128) }
+.cov2 { color: rgb(116, 140, 131) }
+.cov3 { color: rgb(104, 152, 134) }
+.cov4 { color: rgb(92, 164, 137) }
+.cov5 { color: rgb(80, 176, 140) }
+.cov6 { color: rgb(68, 188, 143) }
+.cov7 { color: rgb(56, 200, 146) }
+.cov8 { color: rgb(44, 212, 149) }
+.cov9 { color: rgb(32, 224, 152) }
+.cov10 { color: rgb(20, 236, 155) }
+
+		</style>
+	</head>
+	<body>
+		<div id="topbar">
+			<div id="nav">
+				<select id="files">
+
+				<option value="file0">algoscale/algoscale.go (91.6%)</option>
+
+				<option value="file1">algoscale/cmd/demo/main.go (0.0%)</option>
+
+				</select>
+			</div>
+			<div id="legend">
+				<span>not tracked</span>
+
+				<span class="cov0">not covered</span>
+				<span class="cov8">covered</span>
+
+			</div>
+		</div>
+		<div id="content">
+
+		<pre class="file" id="file0" style="display: none">package algoscale
+
+import (
+        "context"
+        "encoding/json"
+        "errors"
+        "fmt"
+        "math"
+        "math/rand"
+        "runtime"
+        "sync"
+        "time"
+)
+
+type MetricsObserver interface {
+        ObserveSolve(iterations int, duration time.Duration, finalResidual float64, converged bool)
+}
+
+// ============================================================================
+// 1. MEMORY ABSTRACTION &amp; STABLE MATRIX INVERSION
+// ============================================================================
+
+type Matrix struct {
+        Rows int
+        Cols int
+        Data []float64
+}
+
+func NewMatrix(rows, cols int) *Matrix <span class="cov8" title="1">{
+        if rows &lt;= 0 || cols &lt;= 0 </span><span class="cov8" title="1">{
+                panic("dimensi matriks harus bernilai positif (&gt; 0)")</span>
+        }
+        <span class="cov8" title="1">return &amp;Matrix{
+                Rows: rows,
+                Cols: cols,
+                Data: make([]float64, rows*cols),
+        }</span>
+}
+
+func (m *Matrix) At(r, c int) float64  <span class="cov8" title="1">{ return m.Data[r*m.Cols+c] }</span>
+func (m *Matrix) Set(r, c int, v float64) <span class="cov8" title="1">{ m.Data[r*m.Cols+c] = v }</span>
+
+// InvertSmallMatrix menginversi matriks persegi r x r via Gauss-Jordan
+// dengan Dynamic / Relative Pivot Thresholding.
+func InvertSmallMatrix(A *Matrix) (*Matrix, error) <span class="cov8" title="1">{
+        if A == nil </span><span class="cov8" title="1">{
+                return nil, errors.New("matriks A tidak boleh bernilai nil")
+        }</span>
+        <span class="cov8" title="1">if A.Rows != A.Cols </span><span class="cov8" title="1">{
+                return nil, errors.New("matriks harus persegi untuk diinversi")
+        }</span>
+        <span class="cov8" title="1">n := A.Rows
+        if n == 0 </span><span class="cov0" title="0">{
+                return nil, errors.New("dimensi matriks tidak boleh kosong")
+        }</span>
+
+        <span class="cov8" title="1">normInf := 0.0
+        for i := 0; i &lt; n; i++ </span><span class="cov8" title="1">{
+                rowSum := 0.0
+                offset := i * n
+                for j := 0; j &lt; n; j++ </span><span class="cov8" title="1">{
+                        rowSum += math.Abs(A.Data[offset+j])
+                }</span>
+                <span class="cov8" title="1">if rowSum &gt; normInf </span><span class="cov8" title="1">{
+                        normInf = rowSum
+                }</span>
+        }
+        <span class="cov8" title="1">if normInf == 0.0 </span><span class="cov8" title="1">{
+                return nil, errors.New("matriks bernilai nol mutlak (singular)")
+        }</span>
+
+        <span class="cov8" title="1">const epsMach = 2.220446049250313e-16
+        pivotTolerance := math.Max(1e-15, float64(n)*epsMach*normInf)
+
+        aug := make([]float64, n*2*n)
+        for i := 0; i &lt; n; i++ </span><span class="cov8" title="1">{
+                for j := 0; j &lt; n; j++ </span><span class="cov8" title="1">{
+                        aug[i*(2*n)+j] = A.Data[i*n+j]
+                }</span>
+                <span class="cov8" title="1">aug[i*(2*n)+n+i] = 1.0</span>
+        }
+
+        <span class="cov8" title="1">for i := 0; i &lt; n; i++ </span><span class="cov8" title="1">{
+                pivotRow := i
+                maxVal := math.Abs(aug[i*(2*n)+i])
+                for k := i + 1; k &lt; n; k++ </span><span class="cov8" title="1">{
+                        if val := math.Abs(aug[k*(2*n)+i]); val &gt; maxVal </span><span class="cov8" title="1">{
+                                maxVal = val
+                                pivotRow = k
+                        }</span>
+                }
+
+                <span class="cov8" title="1">if maxVal &lt; pivotTolerance </span><span class="cov8" title="1">{
+                        return nil, fmt.Errorf("matriks singular secara numerik (pivot %e &lt; toleransi %e)", maxVal, pivotTolerance)
+                }</span>
+
+                <span class="cov8" title="1">if pivotRow != i </span><span class="cov8" title="1">{
+                        for j := 0; j &lt; 2*n; j++ </span><span class="cov8" title="1">{
+                                aug[i*(2*n)+j], aug[pivotRow*(2*n)+j] = aug[pivotRow*(2*n)+j], aug[i*(2*n)+j]
+                        }</span>
+                }
+
+                <span class="cov8" title="1">pivot := aug[i*(2*n)+i]
+                for j := 0; j &lt; 2*n; j++ </span><span class="cov8" title="1">{
+                        aug[i*(2*n)+j] /= pivot
+                }</span>
+
+                <span class="cov8" title="1">for k := 0; k &lt; n; k++ </span><span class="cov8" title="1">{
+                        if k != i </span><span class="cov8" title="1">{
+                                factor := aug[k*(2*n)+i]
+                                for j := 0; j &lt; 2*n; j++ </span><span class="cov8" title="1">{
+                                        aug[k*(2*n)+j] -= factor * aug[i*(2*n)+j]
+                                }</span>
+                        }
+                }
+        }
+
+        <span class="cov8" title="1">inv := NewMatrix(n, n)
+        for i := 0; i &lt; n; i++ </span><span class="cov8" title="1">{
+                for j := 0; j &lt; n; j++ </span><span class="cov8" title="1">{
+                        inv.Data[i*n+j] = aug[i*(2*n)+n+j]
+                }</span>
+        }
+        <span class="cov8" title="1">return inv, nil</span>
+}
+
+// ============================================================================
+// 2. NUMERICAL LOG-SUM-EXP PRIMITIVES
+// ============================================================================
+
+func LogSumExp(vals []float64) float64 <span class="cov8" title="1">{
+        if len(vals) == 0 </span><span class="cov0" title="0">{
+                return math.Inf(-1)
+        }</span>
+        <span class="cov8" title="1">maxVal := vals[0]
+        for _, v := range vals[1:] </span><span class="cov8" title="1">{
+                if v &gt; maxVal </span><span class="cov8" title="1">{
+                        maxVal = v
+                }</span>
+        }
+        <span class="cov8" title="1">if math.IsInf(maxVal, -1) </span><span class="cov0" title="0">{
+                return math.Inf(-1)
+        }</span>
+
+        <span class="cov8" title="1">sumExp := 0.0
+        for _, v := range vals </span><span class="cov8" title="1">{
+                sumExp += math.Exp(v - maxVal)
+        }</span>
+        <span class="cov8" title="1">return maxVal + math.Log(sumExp)</span>
+}
+
+func LogSumExpWeighted(vals []float64, logW []float64) float64 <span class="cov8" title="1">{
+        if len(vals) == 0 || len(vals) != len(logW) </span><span class="cov8" title="1">{
+                return math.Inf(-1)
+        }</span>
+        <span class="cov8" title="1">maxVal := math.Inf(-1)
+        for j := range vals </span><span class="cov8" title="1">{
+                term := vals[j] + logW[j]
+                if term &gt; maxVal </span><span class="cov8" title="1">{
+                        maxVal = term
+                }</span>
+        }
+        <span class="cov8" title="1">if math.IsInf(maxVal, -1) </span><span class="cov8" title="1">{
+                return math.Inf(-1)
+        }</span>
+
+        <span class="cov8" title="1">sumExp := 0.0
+        for j := range vals </span><span class="cov8" title="1">{
+                sumExp += math.Exp((vals[j] + logW[j]) - maxVal)
+        }</span>
+        <span class="cov8" title="1">return maxVal + math.Log(sumExp)</span>
+}
+
+// ============================================================================
+// 3. UNBALANCED SINKHORN (DENSE PRIMAL)
+// ============================================================================
+
+type UnbalancedConfig struct {
+        Epsilon       float64
+        Tau1          float64
+        Tau2          float64
+        MaxIterations int
+        Tolerance     float64
+}
+
+type UnbalancedResult struct {
+        Plan           *Matrix
+        U              []float64
+        V              []float64
+        Iterations     int
+        FinalResidual  float64
+        Converged      bool
+        MarginalError1 float64
+        MarginalError2 float64
+}
+
+func UnbalancedSinkhorn(K *Matrix, r, c []float64, cfg UnbalancedConfig) (*UnbalancedResult, error) <span class="cov8" title="1">{
+        if K == nil </span><span class="cov8" title="1">{
+                return nil, errors.New("matriks kernel K tidak boleh nil")
+        }</span>
+        <span class="cov8" title="1">m, n := K.Rows, K.Cols
+        if len(r) != m || len(c) != n </span><span class="cov8" title="1">{
+                return nil, fmt.Errorf("dimensi marginal tidak cocok: len(r)=%d vs K.Rows=%d, len(c)=%d vs K.Cols=%d", len(r), m, len(c), n)
+        }</span>
+        <span class="cov8" title="1">if cfg.Epsilon &lt;= 0 || cfg.Tau1 &lt;= 0 || cfg.Tau2 &lt;= 0 </span><span class="cov8" title="1">{
+                return nil, errors.New("hiperparameter Epsilon, Tau1, dan Tau2 harus bernilai riil positif (&gt; 0)")
+        }</span>
+        <span class="cov8" title="1">if cfg.MaxIterations &lt;= 0 || cfg.Tolerance &lt;= 0 </span><span class="cov0" title="0">{
+                return nil, errors.New("MaxIterations dan Tolerance harus bernilai positif (&gt; 0)")
+        }</span>
+
+        <span class="cov8" title="1">for i, val := range r </span><span class="cov8" title="1">{
+                if val &lt; 0 || math.IsNaN(val) || math.IsInf(val, 0) </span><span class="cov8" title="1">{
+                        return nil, fmt.Errorf("marginal r[%d] tidak valid: %v", i, val)
+                }</span>
+        }
+        <span class="cov8" title="1">for j, val := range c </span><span class="cov8" title="1">{
+                if val &lt; 0 || math.IsNaN(val) || math.IsInf(val, 0) </span><span class="cov0" title="0">{
+                        return nil, fmt.Errorf("marginal c[%d] tidak valid: %v", j, val)
+                }</span>
+        }
+
+        <span class="cov8" title="1">kappa1 := cfg.Tau1 / (cfg.Tau1 + cfg.Epsilon)
+        kappa2 := cfg.Tau2 / (cfg.Tau2 + cfg.Epsilon)
+
+        u := make([]float64, m)
+        v := make([]float64, n)
+        uPrev := make([]float64, m)
+        vPrev := make([]float64, n)
+        for i := range u </span><span class="cov8" title="1">{ u[i] = 1.0 }</span>
+        <span class="cov8" title="1">for j := range v </span><span class="cov8" title="1">{ v[j] = 1.0 }</span>
+
+        <span class="cov8" title="1">tempKv := make([]float64, m)
+        tempKtu := make([]float64, n)
+
+        var iter int
+        var residual float64
+        var converged bool
+
+        for iter = 0; iter &lt; cfg.MaxIterations; iter++ </span><span class="cov8" title="1">{
+                copy(uPrev, u)
+                copy(vPrev, v)
+
+                for i := 0; i &lt; m; i++ </span><span class="cov8" title="1">{
+                        sum := 0.0
+                        offset := i * n
+                        for j := 0; j &lt; n; j++ </span><span class="cov8" title="1">{
+                                sum += K.Data[offset+j] * v[j]
+                        }</span>
+                        <span class="cov8" title="1">tempKv[i] = sum</span>
+                }
+
+                <span class="cov8" title="1">for i := 0; i &lt; m; i++ </span><span class="cov8" title="1">{
+                        if tempKv[i] &gt; 1e-300 </span><span class="cov8" title="1">{
+                                u[i] = math.Pow(r[i]/tempKv[i], kappa1)
+                        }</span> else<span class="cov0" title="0"> {
+                                u[i] = 0.0
+                        }</span>
+                }
+
+                <span class="cov8" title="1">for j := 0; j &lt; n; j++ </span><span class="cov8" title="1">{
+                        tempKtu[j] = 0.0
+                }</span>
+                <span class="cov8" title="1">for i := 0; i &lt; m; i++ </span><span class="cov8" title="1">{
+                        ui := u[i]
+                        offset := i * n
+                        for j := 0; j &lt; n; j++ </span><span class="cov8" title="1">{
+                                tempKtu[j] += K.Data[offset+j] * ui
+                        }</span>
+                }
+
+                <span class="cov8" title="1">for j := 0; j &lt; n; j++ </span><span class="cov8" title="1">{
+                        if tempKtu[j] &gt; 1e-300 </span><span class="cov8" title="1">{
+                                v[j] = math.Pow(c[j]/tempKtu[j], kappa2)
+                        }</span> else<span class="cov0" title="0"> {
+                                v[j] = 0.0
+                        }</span>
+                }
+
+                <span class="cov8" title="1">resU := 0.0
+                for i := 0; i &lt; m; i++ </span><span class="cov8" title="1">{
+                        diff := math.Abs(u[i] - uPrev[i])
+                        if diff &gt; resU </span><span class="cov8" title="1">{ resU = diff }</span>
+                }
+                <span class="cov8" title="1">resV := 0.0
+                for j := 0; j &lt; n; j++ </span><span class="cov8" title="1">{
+                        diff := math.Abs(v[j] - vPrev[j])
+                        if diff &gt; resV </span><span class="cov8" title="1">{ resV = diff }</span>
+                }
+
+                <span class="cov8" title="1">residual = math.Max(resU, resV)
+                if residual &lt; cfg.Tolerance </span><span class="cov0" title="0">{
+                        converged = true
+                        iter++
+                        break</span>
+                }
+        }
+
+        <span class="cov8" title="1">P := NewMatrix(m, n)
+        for i := 0; i &lt; m; i++ </span><span class="cov8" title="1">{
+                ui := u[i]
+                offset := i * n
+                for j := 0; j &lt; n; j++ </span><span class="cov8" title="1">{
+                        P.Data[offset+j] = ui * K.Data[offset+j] * v[j]
+                }</span>
+        }
+
+        <span class="cov8" title="1">var err1, err2 float64
+        for i := 0; i &lt; m; i++ </span><span class="cov8" title="1">{
+                rowSum := 0.0
+                offset := i * n
+                for j := 0; j &lt; n; j++ </span><span class="cov8" title="1">{ rowSum += P.Data[offset+j] }</span>
+                <span class="cov8" title="1">err1 += math.Abs(rowSum - r[i])</span>
+        }
+        <span class="cov8" title="1">for j := 0; j &lt; n; j++ </span><span class="cov8" title="1">{
+                colSum := 0.0
+                for i := 0; i &lt; m; i++ </span><span class="cov8" title="1">{ colSum += P.Data[i*n+j] }</span>
+                <span class="cov8" title="1">err2 += math.Abs(colSum - c[j])</span>
+        }
+
+        <span class="cov8" title="1">return &amp;UnbalancedResult{
+                Plan:           P,
+                U:              u,
+                V:              v,
+                Iterations:     iter,
+                FinalResidual:  residual,
+                Converged:      converged,
+                MarginalError1: err1,
+                MarginalError2: err2,
+        }, nil</span>
+}
+
+// ============================================================================
+// 4. LOW-RANK NYSTROM FACTORED SINKHORN
+// ============================================================================
+
+type LowRankKernel struct {
+        M      int
+        N      int
+        Rank   int
+        Kxz    *Matrix
+        KzzInv *Matrix
+        Kzy    *Matrix
+}
+
+func NewLowRankKernel(M, N, Rank int, Kxz, Kzz, Kzy *Matrix) (*LowRankKernel, error) <span class="cov8" title="1">{
+        if Kxz == nil || Kzz == nil || Kzy == nil </span><span class="cov8" title="1">{
+                return nil, errors.New("matriks input (Kxz, Kzz, Kzy) tidak boleh bernilai nil")
+        }</span>
+        <span class="cov8" title="1">if M &lt;= 0 || N &lt;= 0 || Rank &lt;= 0 </span><span class="cov8" title="1">{
+                return nil, errors.New("dimensi M, N, dan Rank harus bernilai positif (&gt; 0)")
+        }</span>
+        <span class="cov8" title="1">if Kxz.Rows != M || Kxz.Cols != Rank </span><span class="cov8" title="1">{
+                return nil, fmt.Errorf("dimensi Kxz tidak valid: (%d, %d), ekspektasi (%d, %d)", Kxz.Rows, Kxz.Cols, M, Rank)
+        }</span>
+        <span class="cov8" title="1">if Kzy.Rows != Rank || Kzy.Cols != N </span><span class="cov8" title="1">{
+                return nil, fmt.Errorf("dimensi Kzy tidak valid: (%d, %d), ekspektasi (%d, %d)", Kzy.Rows, Kzy.Cols, Rank, N)
+        }</span>
+        <span class="cov8" title="1">if Kzz.Rows != Rank || Kzz.Cols != Rank </span><span class="cov8" title="1">{
+                return nil, fmt.Errorf("dimensi Kzz tidak valid: (%d, %d), ekspektasi (%d, %d)", Kzz.Rows, Kzz.Cols, Rank, Rank)
+        }</span>
+
+        <span class="cov8" title="1">kzzInv, err := InvertSmallMatrix(Kzz)
+        if err != nil </span><span class="cov8" title="1">{
+                return nil, fmt.Errorf("inversi Kzz gagal: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">return &amp;LowRankKernel{
+                M:      M,
+                N:      N,
+                Rank:   Rank,
+                Kxz:    Kxz,
+                KzzInv: kzzInv,
+                Kzy:    Kzy,
+        }, nil</span>
+}
+
+type LowRankResult struct {
+        U             []float64
+        V             []float64
+        Iterations    int
+        FinalResidual float64
+        Converged     bool
+}
+
+func (lrk *LowRankKernel) Solve(r, c []float64, maxIter int, tol float64) (*LowRankResult, error) <span class="cov8" title="1">{
+        if lrk == nil </span><span class="cov8" title="1">{
+                return nil, errors.New("receiver LowRankKernel tidak boleh nil")
+        }</span>
+        <span class="cov8" title="1">m, n, rank := lrk.M, lrk.N, lrk.Rank
+
+        if len(r) != m || len(c) != n </span><span class="cov8" title="1">{
+                return nil, fmt.Errorf("dimensi marginal tidak cocok: len(r)=%d (ekspektasi %d), len(c)=%d (ekspektasi %d)", len(r), m, len(c), n)
+        }</span>
+        <span class="cov8" title="1">if maxIter &lt;= 0 || tol &lt;= 0 </span><span class="cov8" title="1">{
+                return nil, errors.New("maxIter dan tol harus bernilai positif (&gt; 0)")
+        }</span>
+
+        <span class="cov8" title="1">for i, val := range r </span><span class="cov8" title="1">{
+                if val &lt; 0 || math.IsNaN(val) || math.IsInf(val, 0) </span><span class="cov8" title="1">{
+                        return nil, fmt.Errorf("marginal r[%d] tidak valid: %v", i, val)
+                }</span>
+        }
+        <span class="cov8" title="1">for j, val := range c </span><span class="cov8" title="1">{
+                if val &lt; 0 || math.IsNaN(val) || math.IsInf(val, 0) </span><span class="cov0" title="0">{
+                        return nil, fmt.Errorf("marginal c[%d] tidak valid: %v", j, val)
+                }</span>
+        }
+
+        <span class="cov8" title="1">u := make([]float64, m)
+        v := make([]float64, n)
+        uPrev := make([]float64, m)
+        vPrev := make([]float64, n)
+        for i := range u </span><span class="cov8" title="1">{ u[i] = 1.0 }</span>
+        <span class="cov8" title="1">for j := range v </span><span class="cov8" title="1">{ v[j] = 1.0 }</span>
+
+        <span class="cov8" title="1">t1 := make([]float64, rank)
+        t2 := make([]float64, rank)
+        kv := make([]float64, m)
+
+        s1 := make([]float64, rank)
+        s2 := make([]float64, rank)
+        ktu := make([]float64, n)
+
+        var residual float64
+        var converged bool
+        var iter int
+
+        for iter = 0; iter &lt; maxIter; iter++ </span><span class="cov8" title="1">{
+                copy(uPrev, u)
+                copy(vPrev, v)
+
+                for k := 0; k &lt; rank; k++ </span><span class="cov8" title="1">{
+                        sum := 0.0
+                        offset := k * n
+                        for j := 0; j &lt; n; j++ </span><span class="cov8" title="1">{ sum += lrk.Kzy.Data[offset+j] * v[j] }</span>
+                        <span class="cov8" title="1">t1[k] = sum</span>
+                }
+
+                <span class="cov8" title="1">for k := 0; k &lt; rank; k++ </span><span class="cov8" title="1">{
+                        sum := 0.0
+                        offset := k * rank
+                        for l := 0; l &lt; rank; l++ </span><span class="cov8" title="1">{ sum += lrk.KzzInv.Data[offset+l] * t1[l] }</span>
+                        <span class="cov8" title="1">t2[k] = sum</span>
+                }
+
+                <span class="cov8" title="1">for i := 0; i &lt; m; i++ </span><span class="cov8" title="1">{
+                        sum := 0.0
+                        offset := i * rank
+                        for k := 0; k &lt; rank; k++ </span><span class="cov8" title="1">{ sum += lrk.Kxz.Data[offset+k] * t2[k] }</span>
+                        <span class="cov8" title="1">kv[i] = sum</span>
+                }
+
+                <span class="cov8" title="1">for i := 0; i &lt; m; i++ </span><span class="cov8" title="1">{
+                        if kv[i] &gt; 1e-300 </span><span class="cov8" title="1">{
+                                u[i] = r[i] / kv[i]
+                        }</span> else<span class="cov0" title="0"> {
+                                u[i] = 0.0
+                        }</span>
+                }
+
+                <span class="cov8" title="1">for k := 0; k &lt; rank; k++ </span><span class="cov8" title="1">{ s1[k] = 0.0 }</span>
+                <span class="cov8" title="1">for i := 0; i &lt; m; i++ </span><span class="cov8" title="1">{
+                        ui := u[i]
+                        offset := i * rank
+                        for k := 0; k &lt; rank; k++ </span><span class="cov8" title="1">{ s1[k] += lrk.Kxz.Data[offset+k] * ui }</span>
+                }
+
+                <span class="cov8" title="1">for l := 0; l &lt; rank; l++ </span><span class="cov8" title="1">{ s2[l] = 0.0 }</span>
+                <span class="cov8" title="1">for k := 0; k &lt; rank; k++ </span><span class="cov8" title="1">{
+                        sk := s1[k]
+                        offset := k * rank
+                        for l := 0; l &lt; rank; l++ </span><span class="cov8" title="1">{ s2[l] += lrk.KzzInv.Data[offset+l] * sk }</span>
+                }
+
+                <span class="cov8" title="1">for j := 0; j &lt; n; j++ </span><span class="cov8" title="1">{ ktu[j] = 0.0 }</span>
+                <span class="cov8" title="1">for k := 0; k &lt; rank; k++ </span><span class="cov8" title="1">{
+                        sk := s2[k]
+                        offset := k * n
+                        for j := 0; j &lt; n; j++ </span><span class="cov8" title="1">{ ktu[j] += lrk.Kzy.Data[offset+j] * sk }</span>
+                }
+
+                <span class="cov8" title="1">for j := 0; j &lt; n; j++ </span><span class="cov8" title="1">{
+                        if ktu[j] &gt; 1e-300 </span><span class="cov8" title="1">{
+                                v[j] = c[j] / ktu[j]
+                        }</span> else<span class="cov0" title="0"> {
+                                v[j] = 0.0
+                        }</span>
+                }
+
+                <span class="cov8" title="1">resU := 0.0
+                for i := 0; i &lt; m; i++ </span><span class="cov8" title="1">{
+                        diff := math.Abs(u[i] - uPrev[i])
+                        if diff &gt; resU </span><span class="cov8" title="1">{ resU = diff }</span>
+                }
+                <span class="cov8" title="1">resV := 0.0
+                for j := 0; j &lt; n; j++ </span><span class="cov8" title="1">{
+                        diff := math.Abs(v[j] - vPrev[j])
+                        if diff &gt; resV </span><span class="cov8" title="1">{ resV = diff }</span>
+                }
+
+                <span class="cov8" title="1">residual = math.Max(resU, resV)
+                if residual &lt; tol </span><span class="cov8" title="1">{
+                        converged = true
+                        iter++
+                        break</span>
+                }
+        }
+
+        <span class="cov8" title="1">return &amp;LowRankResult{
+                U:             u,
+                V:             v,
+                Iterations:    iter,
+                FinalResidual: residual,
+                Converged:     converged,
+        }, nil</span>
+}
+
+// ============================================================================
+// 5. MATRIX-FREE LOG-DOMAIN SINKHORN ENGINE &amp; DEBIASED DIVERGENCE
+// ============================================================================
+
+type LogSinkhornConfig struct {
+        Epsilon           float64
+        EpsilonInit       float64 // If &gt; Epsilon, enables exponential Epsilon Annealing
+        Tau1              float64
+        Tau2              float64
+        MaxIterations     int
+        Tolerance         float64
+        EnableHistory     bool
+        OnIteration       func(iter int, residual float64, eps float64)
+        MomentumBeta      float64 // If &gt; 0, enables Nesterov / Heavy-Ball Momentum Acceleration
+        SparseThreshold   float64 // If &gt; 0, truncates cost terms c_ij &gt; SparseThreshold
+        StagnationWindow  int     // Iteration window to check for stagnant residual
+        StagnationTol     float64 // Minimum required residual decrease over StagnationWindow
+}
+
+type LogSinkhornResult struct {
+        F               []float64
+        G               []float64
+        Iterations      int
+        FinalResidual   float64
+        ResidualHistory []float64
+        Converged       bool
+        Cost            float64
+}
+
+type CostFunction func(i, j int) float64
+
+func LogSinkhornStreaming(
+        M, N int,
+        logR, logC []float64,
+        costFn CostFunction,
+        cfg LogSinkhornConfig,
+) (*LogSinkhornResult, error) <span class="cov8" title="1">{
+        return LogSinkhornStreamingContext(context.Background(), M, N, logR, logC, costFn, cfg, nil)
+}</span>
+
+func LogSinkhornStreamingContext(
+        ctx context.Context,
+        M, N int,
+        logR, logC []float64,
+        costFn CostFunction,
+        cfg LogSinkhornConfig,
+        observer MetricsObserver,
+) (*LogSinkhornResult, error) <span class="cov8" title="1">{
+        startTime := time.Now()
+        if ctx == nil </span><span class="cov0" title="0">{
+                ctx = context.Background()
+        }</span>
+        <span class="cov8" title="1">if M &lt;= 0 || N &lt;= 0 </span><span class="cov0" title="0">{
+                return nil, errors.New("dimensi M dan N harus bernilai positif")
+        }</span>
+        <span class="cov8" title="1">if len(logR) != M || len(logC) != N </span><span class="cov0" title="0">{
+                return nil, fmt.Errorf("dimensi log-marginal mismatch: len(logR)=%d vs %d, len(logC)=%d vs %d", len(logR), M, len(logC), N)
+        }</span>
+        <span class="cov8" title="1">if cfg.Epsilon &lt;= 0 || cfg.MaxIterations &lt;= 0 || cfg.Tolerance &lt;= 0 </span><span class="cov0" title="0">{
+                return nil, errors.New("konfigurasi tidak valid: Epsilon, MaxIterations, dan Tolerance harus &gt; 0")
+        }</span>
+        <span class="cov8" title="1">if cfg.Tau1 &lt;= 0 || cfg.Tau2 &lt;= 0 </span><span class="cov0" title="0">{
+                return nil, errors.New("konfigurasi tidak valid: Tau1 dan Tau2 harus &gt; 0")
+        }</span>
+
+        <span class="cov8" title="1">eps := cfg.Epsilon
+        invEps := 1.0 / eps
+
+        kappa1 := cfg.Tau1 / (cfg.Tau1 + eps)
+        kappa2 := cfg.Tau2 / (cfg.Tau2 + eps)
+        if math.IsInf(cfg.Tau1, 1) </span><span class="cov8" title="1">{ kappa1 = 1.0 }</span>
+        <span class="cov8" title="1">if math.IsInf(cfg.Tau2, 1) </span><span class="cov8" title="1">{ kappa2 = 1.0 }</span>
+
+        <span class="cov8" title="1">f := make([]float64, M)
+        g := make([]float64, N)
+        fPrev := make([]float64, M)
+        gPrev := make([]float64, N)
+        buffer := make([]float64, int(math.Max(float64(M), float64(N))))
+
+        var resHistory []float64
+        if cfg.EnableHistory </span><span class="cov8" title="1">{
+                resHistory = make([]float64, 0, cfg.MaxIterations)
+        }</span>
+
+        <span class="cov8" title="1">var iter int
+        var residual float64
+        var converged bool
+
+        epsInit := cfg.EpsilonInit
+        useAnnealing := epsInit &gt; cfg.Epsilon
+
+        beta := cfg.MomentumBeta
+        hasMomentum := beta &gt; 0.0 &amp;&amp; beta &lt; 1.0
+
+        for iter = 0; iter &lt; cfg.MaxIterations; iter++ </span><span class="cov8" title="1">{
+                select </span>{
+                case &lt;-ctx.Done():<span class="cov8" title="1">
+                        return nil, ctx.Err()</span>
+                default:<span class="cov8" title="1"></span>
+                }
+
+                <span class="cov8" title="1">if useAnnealing </span><span class="cov8" title="1">{
+                        decayFactor := float64(iter) / float64(cfg.MaxIterations)
+                        eps = cfg.Epsilon + (epsInit-cfg.Epsilon)*math.Exp(-5.0*decayFactor)
+                        invEps = 1.0 / eps
+                        kappa1 = cfg.Tau1 / (cfg.Tau1 + eps)
+                        kappa2 = cfg.Tau2 / (cfg.Tau2 + eps)
+                        if math.IsInf(cfg.Tau1, 1) </span><span class="cov0" title="0">{ kappa1 = 1.0 }</span>
+                        <span class="cov8" title="1">if math.IsInf(cfg.Tau2, 1) </span><span class="cov0" title="0">{ kappa2 = 1.0 }</span>
+                }
+
+                <span class="cov8" title="1">copy(fPrev, f)
+                copy(gPrev, g)
+
+                numWorkers := runtime.GOMAXPROCS(0)
+                if numWorkers &lt; 1 </span><span class="cov0" title="0">{
+                        numWorkers = 1
+                }</span>
+
+                <span class="cov8" title="1">sThresh := cfg.SparseThreshold
+                hasSparse := sThresh &gt; 0.0
+
+                if M &gt;= 100 || N &gt;= 100 </span><span class="cov8" title="1">{
+                        var wg sync.WaitGroup
+
+                        chunkSizeM := (M + numWorkers - 1) / numWorkers
+                        for w := 0; w &lt; numWorkers; w++ </span><span class="cov8" title="1">{
+                                start := w * chunkSizeM
+                                end := start + chunkSizeM
+                                if start &gt;= M </span><span class="cov0" title="0">{
+                                        break</span>
+                                }
+                                <span class="cov8" title="1">if end &gt; M </span><span class="cov0" title="0">{
+                                        end = M
+                                }</span>
+                                <span class="cov8" title="1">wg.Add(1)
+                                go func(startI, endI int) </span><span class="cov8" title="1">{
+                                        defer wg.Done()
+                                        buf := make([]float64, N)
+                                        for i := startI; i &lt; endI; i++ </span><span class="cov8" title="1">{
+                                                for j := 0; j &lt; N; j++ </span><span class="cov8" title="1">{
+                                                        c_ij := costFn(i, j)
+                                                        if hasSparse &amp;&amp; c_ij &gt; sThresh </span><span class="cov8" title="1">{
+                                                                buf[j] = -1e9
+                                                        }</span> else<span class="cov8" title="1"> {
+                                                                buf[j] = (g[j] - c_ij) * invEps
+                                                        }</span>
+                                                }
+                                                <span class="cov8" title="1">lse := LogSumExp(buf)
+                                                f[i] = kappa1 * (-eps*lse + eps*logR[i])</span>
+                                        }
+                                }(start, end)
+                        }
+                        <span class="cov8" title="1">wg.Wait()
+
+                        chunkSizeN := (N + numWorkers - 1) / numWorkers
+                        for w := 0; w &lt; numWorkers; w++ </span><span class="cov8" title="1">{
+                                start := w * chunkSizeN
+                                end := start + chunkSizeN
+                                if start &gt;= N </span><span class="cov0" title="0">{
+                                        break</span>
+                                }
+                                <span class="cov8" title="1">if end &gt; N </span><span class="cov0" title="0">{
+                                        end = N
+                                }</span>
+                                <span class="cov8" title="1">wg.Add(1)
+                                go func(startJ, endJ int) </span><span class="cov8" title="1">{
+                                        defer wg.Done()
+                                        buf := make([]float64, M)
+                                        for j := startJ; j &lt; endJ; j++ </span><span class="cov8" title="1">{
+                                                for i := 0; i &lt; M; i++ </span><span class="cov8" title="1">{
+                                                        c_ij := costFn(i, j)
+                                                        if hasSparse &amp;&amp; c_ij &gt; sThresh </span><span class="cov8" title="1">{
+                                                                buf[i] = -1e9
+                                                        }</span> else<span class="cov8" title="1"> {
+                                                                buf[i] = (f[i] - c_ij) * invEps
+                                                        }</span>
+                                                }
+                                                <span class="cov8" title="1">lse := LogSumExp(buf)
+                                                g[j] = kappa2 * (-eps*lse + eps*logC[j])</span>
+                                        }
+                                }(start, end)
+                        }
+                        <span class="cov8" title="1">wg.Wait()</span>
+                } else<span class="cov8" title="1"> {
+                        sThresh := cfg.SparseThreshold
+                        hasSparse := sThresh &gt; 0.0
+
+                        for i := 0; i &lt; M; i++ </span><span class="cov8" title="1">{
+                                for j := 0; j &lt; N; j++ </span><span class="cov8" title="1">{
+                                        c_ij := costFn(i, j)
+                                        if hasSparse &amp;&amp; c_ij &gt; sThresh </span><span class="cov8" title="1">{
+                                                buffer[j] = -1e9
+                                        }</span> else<span class="cov8" title="1"> {
+                                                buffer[j] = (g[j] - c_ij) * invEps
+                                        }</span>
+                                }
+                                <span class="cov8" title="1">lse := LogSumExp(buffer[:N])
+                                f[i] = kappa1 * (-eps*lse + eps*logR[i])</span>
+                        }
+
+                        <span class="cov8" title="1">for j := 0; j &lt; N; j++ </span><span class="cov8" title="1">{
+                                for i := 0; i &lt; M; i++ </span><span class="cov8" title="1">{
+                                        c_ij := costFn(i, j)
+                                        if hasSparse &amp;&amp; c_ij &gt; sThresh </span><span class="cov8" title="1">{
+                                                buffer[i] = -1e9
+                                        }</span> else<span class="cov8" title="1"> {
+                                                buffer[i] = (f[i] - c_ij) * invEps
+                                        }</span>
+                                }
+                                <span class="cov8" title="1">lse := LogSumExp(buffer[:M])
+                                g[j] = kappa2 * (-eps*lse + eps*logC[j])</span>
+                        }
+                }
+
+                <span class="cov8" title="1">if hasMomentum &amp;&amp; iter &gt; 0 </span><span class="cov8" title="1">{
+                        for i := 0; i &lt; M; i++ </span><span class="cov8" title="1">{
+                                f[i] = f[i] + beta*(f[i]-fPrev[i])
+                        }</span>
+                        <span class="cov8" title="1">for j := 0; j &lt; N; j++ </span><span class="cov8" title="1">{
+                                g[j] = g[j] + beta*(g[j]-gPrev[j])
+                        }</span>
+                }
+
+                <span class="cov8" title="1">resF := 0.0
+                for i := 0; i &lt; M; i++ </span><span class="cov8" title="1">{
+                        diff := math.Abs(f[i] - fPrev[i])
+                        if diff &gt; resF </span><span class="cov8" title="1">{ resF = diff }</span>
+                }
+                <span class="cov8" title="1">resG := 0.0
+                for j := 0; j &lt; N; j++ </span><span class="cov8" title="1">{
+                        diff := math.Abs(g[j] - gPrev[j])
+                        if diff &gt; resG </span><span class="cov8" title="1">{ resG = diff }</span>
+                }
+
+                <span class="cov8" title="1">residual = math.Max(resF, resG)
+                if cfg.EnableHistory || cfg.StagnationWindow &gt; 0 </span><span class="cov8" title="1">{
+                        resHistory = append(resHistory, residual)
+                }</span>
+                <span class="cov8" title="1">if cfg.OnIteration != nil </span><span class="cov8" title="1">{
+                        cfg.OnIteration(iter, residual, eps)
+                }</span>
+
+                <span class="cov8" title="1">if residual &lt; cfg.Tolerance </span><span class="cov8" title="1">{
+                        converged = true
+                        iter++
+                        break</span>
+                }
+
+                // Early stopping on residual stagnation
+                <span class="cov8" title="1">w := cfg.StagnationWindow
+                stTol := cfg.StagnationTol
+                if w &gt; 0 &amp;&amp; len(resHistory) &gt;= w &amp;&amp; stTol &gt; 0 </span><span class="cov8" title="1">{
+                        pastRes := resHistory[len(resHistory)-w]
+                        if pastRes-residual &lt; stTol </span><span class="cov8" title="1">{
+                                converged = true
+                                iter++
+                                break</span>
+                        }
+                }
+        }
+
+        <span class="cov8" title="1">totalCost := 0.0
+        for i := 0; i &lt; M; i++ </span><span class="cov8" title="1">{
+                for j := 0; j &lt; N; j++ </span><span class="cov8" title="1">{
+                        c_ij := costFn(i, j)
+                        logP_ij := (f[i] + g[j] - c_ij) * invEps
+                        p_ij := math.Exp(logP_ij)
+                        totalCost += p_ij * c_ij
+                }</span>
+        }
+
+        <span class="cov8" title="1">res := &amp;LogSinkhornResult{
+                F:               f,
+                G:               g,
+                Iterations:      iter,
+                FinalResidual:   residual,
+                ResidualHistory: resHistory,
+                Converged:       converged,
+                Cost:            totalCost,
+        }
+
+        if observer != nil </span><span class="cov8" title="1">{
+                observer.ObserveSolve(iter, time.Since(startTime), residual, converged)
+        }</span>
+
+        <span class="cov8" title="1">return res, nil</span>
+}
+
+// ToDenseMatrix constructs the dense transport matrix P_ij = exp((f_i + g_j - c_ij)/eps + logR_i + logC_j)
+func (res *LogSinkhornResult) ToDenseMatrix(
+        M, N int,
+        logR, logC []float64,
+        costFn CostFunction,
+        eps float64,
+) (*Matrix, error) <span class="cov8" title="1">{
+        if res == nil </span><span class="cov8" title="1">{
+                return nil, errors.New("result tidak boleh nil")
+        }</span>
+        <span class="cov8" title="1">if len(res.F) != M || len(res.G) != N </span><span class="cov8" title="1">{
+                return nil, fmt.Errorf("dimensi F/G mismatch dengan M (%d), N (%d)", M, N)
+        }</span>
+        <span class="cov8" title="1">if eps &lt;= 0 </span><span class="cov8" title="1">{
+                return nil, errors.New("epsilon harus bernilai positif (&gt; 0)")
+        }</span>
+
+        <span class="cov8" title="1">invEps := 1.0 / eps
+        P := NewMatrix(M, N)
+        for i := 0; i &lt; M; i++ </span><span class="cov8" title="1">{
+                offset := i * N
+                for j := 0; j &lt; N; j++ </span><span class="cov8" title="1">{
+                        c_ij := costFn(i, j)
+                        logP_ij := (res.F[i] + res.G[j] - c_ij) * invEps
+                        P.Data[offset+j] = math.Exp(logP_ij)
+                }</span>
+        }
+        <span class="cov8" title="1">return P, nil</span>
+}
+
+// ExportJSON serializes LogSinkhornResult into JSON bytes.
+func (res *LogSinkhornResult) ExportJSON() ([]byte, error) <span class="cov8" title="1">{
+        if res == nil </span><span class="cov0" title="0">{
+                return nil, errors.New("result tidak boleh nil")
+        }</span>
+        <span class="cov8" title="1">return json.Marshal(res)</span>
+}
+
+// ImportJSON deserializes JSON bytes into a LogSinkhornResult.
+func ImportJSON(data []byte) (*LogSinkhornResult, error) <span class="cov8" title="1">{
+        var res LogSinkhornResult
+        if err := json.Unmarshal(data, &amp;res); err != nil </span><span class="cov0" title="0">{
+                return nil, err
+        }</span>
+        <span class="cov8" title="1">return &amp;res, nil</span>
+}
+
+// SinkhornDivergence menghitung metrik jarak debiased S_eps(X, Y)
+func SinkhornDivergence(
+        X, Y [][]float64,
+        costMetric func(a, b []float64) float64,
+        cfg LogSinkhornConfig,
+) (float64, error) <span class="cov8" title="1">{
+        M := len(X)
+        N := len(Y)
+        if M == 0 || N == 0 </span><span class="cov0" title="0">{
+                return 0, errors.New("point clouds tidak boleh kosong")
+        }</span>
+
+        <span class="cov8" title="1">logR := make([]float64, M)
+        for i := range logR </span><span class="cov8" title="1">{ logR[i] = -math.Log(float64(M)) }</span>
+        <span class="cov8" title="1">logC := make([]float64, N)
+        for j := range logC </span><span class="cov8" title="1">{ logC[j] = -math.Log(float64(N)) }</span>
+
+        <span class="cov8" title="1">costXY := func(i, j int) float64 </span><span class="cov8" title="1">{ return costMetric(X[i], Y[j]) }</span>
+        <span class="cov8" title="1">costXX := func(i, j int) float64 </span><span class="cov8" title="1">{ return costMetric(X[i], X[j]) }</span>
+        <span class="cov8" title="1">costYY := func(i, j int) float64 </span><span class="cov8" title="1">{ return costMetric(Y[i], Y[j]) }</span>
+
+        <span class="cov8" title="1">cfgBalanced := cfg
+        cfgBalanced.Tau1 = math.Inf(1)
+        cfgBalanced.Tau2 = math.Inf(1)
+
+        resXY, err := LogSinkhornStreaming(M, N, logR, logC, costXY, cfgBalanced)
+        if err != nil </span><span class="cov0" title="0">{ return 0, err }</span>
+        <span class="cov8" title="1">resXX, err := LogSinkhornStreaming(M, M, logR, logR, costXX, cfgBalanced)
+        if err != nil </span><span class="cov0" title="0">{ return 0, err }</span>
+        <span class="cov8" title="1">resYY, err := LogSinkhornStreaming(N, N, logC, logC, costYY, cfgBalanced)
+        if err != nil </span><span class="cov0" title="0">{ return 0, err }</span>
+
+        <span class="cov8" title="1">div := resXY.Cost - 0.5*resXX.Cost - 0.5*resYY.Cost
+        if div &lt; 0 &amp;&amp; div &gt; -1e-12 </span><span class="cov0" title="0">{ div = 0.0 }</span>
+        <span class="cov8" title="1">return div, nil</span>
+}
+
+// ============================================================================
+// 6. SINKHORN BARYCENTERS (LOG-DOMAIN)
+// ============================================================================
+
+type BarycenterConfig struct {
+        Epsilon       float64
+        MaxIterations int
+        Tolerance     float64
+}
+
+type BarycenterResult struct {
+        Barycenter    []float64
+        LogBarycenter []float64
+        Iterations    int
+        FinalResidual float64
+        Converged     bool
+        Subcosts      []float64
+        WeightedCost  float64
+}
+
+func ComputeBarycenterLogDomain(
+        distributions [][]float64,
+        weights []float64,
+        costFn func(i, j int) float64,
+        M, N int,
+        cfg BarycenterConfig,
+) (*BarycenterResult, error) <span class="cov8" title="1">{
+        K := len(distributions)
+        if K == 0 </span><span class="cov0" title="0">{
+                return nil, errors.New("tidak ada distribusi input yang diberikan")
+        }</span>
+        <span class="cov8" title="1">if len(weights) != K </span><span class="cov0" title="0">{
+                return nil, fmt.Errorf("jumlah bobot (%d) tidak cocok dengan jumlah distribusi (%d)", len(weights), K)
+        }</span>
+        <span class="cov8" title="1">if M &lt;= 0 || N &lt;= 0 </span><span class="cov0" title="0">{
+                return nil, errors.New("dimensi grid M dan N harus bernilai positif")
+        }</span>
+        <span class="cov8" title="1">if cfg.Epsilon &lt;= 0 || cfg.MaxIterations &lt;= 0 || cfg.Tolerance &lt;= 0 </span><span class="cov0" title="0">{
+                return nil, errors.New("konfigurasi tidak valid: Epsilon, MaxIterations, dan Tolerance harus &gt; 0")
+        }</span>
+
+        <span class="cov8" title="1">sumLambda := 0.0
+        for k, w := range weights </span><span class="cov8" title="1">{
+                if w &lt; 0 || math.IsNaN(w) || math.IsInf(w, 0) </span><span class="cov0" title="0">{
+                        return nil, fmt.Errorf("bobot lambda[%d] tidak valid: %v", k, w)
+                }</span>
+                <span class="cov8" title="1">sumLambda += w</span>
+        }
+        <span class="cov8" title="1">if math.Abs(sumLambda-1.0) &gt; 1e-5 </span><span class="cov0" title="0">{
+                return nil, fmt.Errorf("total bobot lambda harus bernilai 1.0 (didapat: %f)", sumLambda)
+        }</span>
+
+        <span class="cov8" title="1">logP := make([][]float64, K)
+        for k := 0; k &lt; K; k++ </span><span class="cov8" title="1">{
+                if len(distributions[k]) != N </span><span class="cov0" title="0">{
+                        return nil, fmt.Errorf("panjang distribusi[%d] (%d) != N (%d)", k, len(distributions[k]), N)
+                }</span>
+                <span class="cov8" title="1">logP[k] = make([]float64, N)
+                sumPk := 0.0
+                for _, val := range distributions[k] </span><span class="cov8" title="1">{
+                        if val &lt; 0 || math.IsNaN(val) || math.IsInf(val, 0) </span><span class="cov0" title="0">{
+                                return nil, fmt.Errorf("distribusi[%d] mengandung nilai negatif/NaN", k)
+                        }</span>
+                        <span class="cov8" title="1">sumPk += val</span>
+                }
+                <span class="cov8" title="1">if sumPk &lt;= 0 </span><span class="cov0" title="0">{
+                        return nil, fmt.Errorf("distribusi[%d] bernilai nol mutlak", k)
+                }</span>
+                <span class="cov8" title="1">for j, val := range distributions[k] </span><span class="cov8" title="1">{
+                        normVal := val / sumPk
+                        if normVal &gt; 1e-300 </span><span class="cov8" title="1">{
+                                logP[k][j] = math.Log(normVal)
+                        }</span> else<span class="cov0" title="0"> {
+                                logP[k][j] = -700.0
+                        }</span>
+                }
+        }
+
+        <span class="cov8" title="1">eps := cfg.Epsilon
+        invEps := 1.0 / eps
+
+        f := make([][]float64, K)
+        g := make([][]float64, K)
+        for k := 0; k &lt; K; k++ </span><span class="cov8" title="1">{
+                f[k] = make([]float64, M)
+                g[k] = make([]float64, N)
+        }</span>
+
+        <span class="cov8" title="1">logQ := make([]float64, M)
+        logQPrev := make([]float64, M)
+        initLogQ := -math.Log(float64(M))
+        for i := range logQ </span><span class="cov8" title="1">{ logQ[i] = initLogQ }</span>
+
+        <span class="cov8" title="1">bufN := make([]float64, N)
+        bufM := make([]float64, M)
+
+        var iter int
+        var residual float64
+        var converged bool
+
+        for iter = 0; iter &lt; cfg.MaxIterations; iter++ </span><span class="cov8" title="1">{
+                copy(logQPrev, logQ)
+
+                if K &gt; 1 </span><span class="cov8" title="1">{
+                        var wg sync.WaitGroup
+                        for k := 0; k &lt; K; k++ </span><span class="cov8" title="1">{
+                                if weights[k] == 0.0 </span><span class="cov0" title="0">{ continue</span> }
+                                <span class="cov8" title="1">wg.Add(1)
+                                go func(kIdx int) </span><span class="cov8" title="1">{
+                                        defer wg.Done()
+                                        buf := make([]float64, N)
+                                        for i := 0; i &lt; M; i++ </span><span class="cov8" title="1">{
+                                                for j := 0; j &lt; N; j++ </span><span class="cov8" title="1">{
+                                                        buf[j] = (g[kIdx][j] - costFn(i, j)) * invEps
+                                                }</span>
+                                                <span class="cov8" title="1">f[kIdx][i] = eps*logQ[i] - eps*LogSumExp(buf)</span>
+                                        }
+                                }(k)
+                        }
+                        <span class="cov8" title="1">wg.Wait()
+
+                        for k := 0; k &lt; K; k++ </span><span class="cov8" title="1">{
+                                if weights[k] == 0.0 </span><span class="cov0" title="0">{ continue</span> }
+                                <span class="cov8" title="1">wg.Add(1)
+                                go func(kIdx int) </span><span class="cov8" title="1">{
+                                        defer wg.Done()
+                                        buf := make([]float64, M)
+                                        for j := 0; j &lt; N; j++ </span><span class="cov8" title="1">{
+                                                for i := 0; i &lt; M; i++ </span><span class="cov8" title="1">{
+                                                        buf[i] = (f[kIdx][i] - costFn(i, j)) * invEps
+                                                }</span>
+                                                <span class="cov8" title="1">g[kIdx][j] = eps*logP[kIdx][j] - eps*LogSumExp(buf)</span>
+                                        }
+                                }(k)
+                        }
+                        <span class="cov8" title="1">wg.Wait()</span>
+                } else<span class="cov0" title="0"> {
+                        for k := 0; k &lt; K; k++ </span><span class="cov0" title="0">{
+                                if weights[k] == 0.0 </span><span class="cov0" title="0">{ continue</span> }
+                                <span class="cov0" title="0">for i := 0; i &lt; M; i++ </span><span class="cov0" title="0">{
+                                        for j := 0; j &lt; N; j++ </span><span class="cov0" title="0">{
+                                                bufN[j] = (g[k][j] - costFn(i, j)) * invEps
+                                        }</span>
+                                        <span class="cov0" title="0">f[k][i] = eps*logQ[i] - eps*LogSumExp(bufN)</span>
+                                }
+                        }
+
+                        <span class="cov0" title="0">for k := 0; k &lt; K; k++ </span><span class="cov0" title="0">{
+                                if weights[k] == 0.0 </span><span class="cov0" title="0">{ continue</span> }
+                                <span class="cov0" title="0">for j := 0; j &lt; N; j++ </span><span class="cov0" title="0">{
+                                        for i := 0; i &lt; M; i++ </span><span class="cov0" title="0">{
+                                                bufM[i] = (f[k][i] - costFn(i, j)) * invEps
+                                        }</span>
+                                        <span class="cov0" title="0">g[k][j] = eps*logP[k][j] - eps*LogSumExp(bufM)</span>
+                                }
+                        }
+                }
+
+                <span class="cov8" title="1">for i := 0; i &lt; M; i++ </span><span class="cov8" title="1">{
+                        logQ[i] = 0.0
+                        for k := 0; k &lt; K; k++ </span><span class="cov8" title="1">{
+                                if weights[k] == 0.0 </span><span class="cov0" title="0">{ continue</span> }
+                                <span class="cov8" title="1">for j := 0; j &lt; N; j++ </span><span class="cov8" title="1">{
+                                        bufN[j] = (g[k][j] - costFn(i, j)) * invEps
+                                }</span>
+                                <span class="cov8" title="1">logQ[i] += weights[k] * LogSumExp(bufN)</span>
+                        }
+                }
+
+                <span class="cov8" title="1">lseTotal := LogSumExp(logQ)
+                for i := 0; i &lt; M; i++ </span><span class="cov8" title="1">{ logQ[i] -= lseTotal }</span>
+
+                <span class="cov8" title="1">residual = 0.0
+                for i := 0; i &lt; M; i++ </span><span class="cov8" title="1">{
+                        residual += math.Abs(math.Exp(logQ[i]) - math.Exp(logQPrev[i]))
+                }</span>
+
+                <span class="cov8" title="1">if residual &lt; cfg.Tolerance </span><span class="cov8" title="1">{
+                        converged = true
+                        iter++
+                        break</span>
+                }
+        }
+
+        <span class="cov8" title="1">q := make([]float64, M)
+        for i := 0; i &lt; M; i++ </span><span class="cov8" title="1">{ q[i] = math.Exp(logQ[i]) }</span>
+
+        <span class="cov8" title="1">subcosts := make([]float64, K)
+        weightedCost := 0.0
+        for k := 0; k &lt; K; k++ </span><span class="cov8" title="1">{
+                cost_k := 0.0
+                for i := 0; i &lt; M; i++ </span><span class="cov8" title="1">{
+                        for j := 0; j &lt; N; j++ </span><span class="cov8" title="1">{
+                                c_ij := costFn(i, j)
+                                logP_ij := (f[k][i] + g[k][j] - c_ij) * invEps
+                                cost_k += math.Exp(logP_ij) * c_ij
+                        }</span>
+                }
+                <span class="cov8" title="1">subcosts[k] = cost_k
+                weightedCost += weights[k] * cost_k</span>
+        }
+
+        <span class="cov8" title="1">return &amp;BarycenterResult{
+                Barycenter:    q,
+                LogBarycenter: logQ,
+                Iterations:    iter,
+                FinalResidual: residual,
+                Converged:     converged,
+                Subcosts:      subcosts,
+                WeightedCost:  weightedCost,
+        }, nil</span>
+}
+
+// ============================================================================
+// 7. STOCHASTIC MINI-BATCH SINKHORN (STREAMING GENEVAY FRAMEWORK)
+// ============================================================================
+
+type Sampler func(batchSize int) [][]float64
+
+type StreamingConfig struct {
+        Epsilon      float64
+        BatchSize    int
+        Steps        int
+        NumFeatures  int
+        LearningRate float64
+}
+
+// StreamingContinuousSinkhorn menyelesaikan Optimal Transport skala jutaan / aliran kontinu
+func StreamingContinuousSinkhorn(
+        sampleX, sampleY Sampler,
+        dim int,
+        cfg StreamingConfig,
+) (float64, error) <span class="cov8" title="1">{
+        if sampleX == nil || sampleY == nil </span><span class="cov8" title="1">{
+                return 0, errors.New("sampler sampleX dan sampleY tidak boleh nil")
+        }</span>
+        <span class="cov8" title="1">if dim &lt;= 0 || cfg.BatchSize &lt;= 0 || cfg.Steps &lt;= 0 </span><span class="cov8" title="1">{
+                return 0, errors.New("parameter konfigurasi tidak valid")
+        }</span>
+        <span class="cov8" title="1">L := cfg.NumFeatures
+        if L &lt;= 0 </span><span class="cov0" title="0">{ L = 256 }</span>
+        <span class="cov8" title="1">B := cfg.BatchSize
+        eps := cfg.Epsilon
+        invEps := 1.0 / eps
+
+        W := make([][]float64, L)
+        b := make([]float64, L)
+        for l := 0; l &lt; L; l++ </span><span class="cov8" title="1">{
+                W[l] = make([]float64, dim)
+                for d := 0; d &lt; dim; d++ </span><span class="cov8" title="1">{
+                        W[l][d] = rand.NormFloat64() * 0.3
+                }</span>
+                <span class="cov8" title="1">b[l] = rand.Float64() * 2.0 * math.Pi</span>
+        }
+
+        <span class="cov8" title="1">theta := make([]float64, L)
+        mTheta := make([]float64, L)
+        vTheta := make([]float64, L)
+
+        phiX := make([][]float64, B)
+        for i := range phiX </span><span class="cov8" title="1">{ phiX[i] = make([]float64, L) }</span>
+
+        <span class="cov8" title="1">scaleRFF := math.Sqrt(2.0 / float64(L))
+        bufB := make([]float64, B)
+        wAccum := make([]float64, B)
+
+        const beta1, beta2, epsAdam = 0.9, 0.999, 1e-8
+
+        evalU := func(x []float64) float64 </span><span class="cov8" title="1">{
+                val := 0.0
+                for l := 0; l &lt; L; l++ </span><span class="cov8" title="1">{
+                        dot := 0.0
+                        for d := 0; d &lt; dim; d++ </span><span class="cov8" title="1">{ dot += W[l][d] * x[d] }</span>
+                        <span class="cov8" title="1">val += theta[l] * scaleRFF * math.Cos(dot + b[l])</span>
+                }
+                <span class="cov8" title="1">return val</span>
+        }
+
+        <span class="cov8" title="1">for step := 1; step &lt;= cfg.Steps; step++ </span><span class="cov8" title="1">{
+                batchX := sampleX(B)
+                batchY := sampleY(B)
+
+                uVals := make([]float64, B)
+                for i := 0; i &lt; B; i++ </span><span class="cov8" title="1">{
+                        uVal := 0.0
+                        for l := 0; l &lt; L; l++ </span><span class="cov8" title="1">{
+                                dot := 0.0
+                                for d := 0; d &lt; dim; d++ </span><span class="cov8" title="1">{ dot += W[l][d] * batchX[i][d] }</span>
+                                <span class="cov8" title="1">phi := scaleRFF * math.Cos(dot + b[l])
+                                phiX[i][l] = phi
+                                uVal += theta[l] * phi</span>
+                        }
+                        <span class="cov8" title="1">uVals[i] = uVal</span>
+                }
+
+                <span class="cov8" title="1">gradTheta := make([]float64, L)
+
+                for l := 0; l &lt; L; l++ </span><span class="cov8" title="1">{
+                        meanPhi := 0.0
+                        for i := 0; i &lt; B; i++ </span><span class="cov8" title="1">{ meanPhi += phiX[i][l] }</span>
+                        <span class="cov8" title="1">gradTheta[l] = meanPhi / float64(B)</span>
+                }
+
+                <span class="cov8" title="1">for i := 0; i &lt; B; i++ </span><span class="cov8" title="1">{ wAccum[i] = 0.0 }</span>
+
+                <span class="cov8" title="1">for j := 0; j &lt; B; j++ </span><span class="cov8" title="1">{
+                        for i := 0; i &lt; B; i++ </span><span class="cov8" title="1">{
+                                distSq := 0.0
+                                for d := 0; d &lt; dim; d++ </span><span class="cov8" title="1">{
+                                        diff := batchX[i][d] - batchY[j][d]
+                                        distSq += diff * diff
+                                }</span>
+                                <span class="cov8" title="1">bufB[i] = (uVals[i] - distSq) * invEps</span>
+                        }
+                        <span class="cov8" title="1">lse := LogSumExp(bufB)
+                        for i := 0; i &lt; B; i++ </span><span class="cov8" title="1">{
+                                wAccum[i] += math.Exp(bufB[i] - lse)
+                        }</span>
+                }
+
+                <span class="cov8" title="1">invB := 1.0 / float64(B)
+                for i := 0; i &lt; B; i++ </span><span class="cov8" title="1">{
+                        factor := wAccum[i] * invB
+                        for l := 0; l &lt; L; l++ </span><span class="cov8" title="1">{
+                                gradTheta[l] -= factor * phiX[i][l]
+                        }</span>
+                }
+
+                <span class="cov8" title="1">for l := 0; l &lt; L; l++ </span><span class="cov8" title="1">{
+                        g := gradTheta[l]
+                        if math.IsNaN(g) || math.IsInf(g, 0) </span><span class="cov0" title="0">{
+                                g = 0.0
+                        }</span>
+                        <span class="cov8" title="1">mTheta[l] = beta1*mTheta[l] + (1.0-beta1)*g
+                        vTheta[l] = beta2*vTheta[l] + (1.0-beta2)*g*g
+                        mHat := mTheta[l] / (1.0 - math.Pow(beta1, float64(step)))
+                        vHat := vTheta[l] / (1.0 - math.Pow(beta2, float64(step)))
+
+                        update := cfg.LearningRate * mHat / (math.Sqrt(vHat) + epsAdam)
+                        if !math.IsNaN(update) &amp;&amp; !math.IsInf(update, 0) </span><span class="cov8" title="1">{
+                                theta[l] += update
+                        }</span>
+                }
+        }
+
+        <span class="cov8" title="1">const B_eval = 500
+        evalX := sampleX(B_eval)
+        evalY := sampleY(B_eval)
+
+        uEval := make([]float64, B_eval)
+        for i := 0; i &lt; B_eval; i++ </span><span class="cov8" title="1">{ uEval[i] = evalU(evalX[i]) }</span>
+
+        <span class="cov8" title="1">vEval := make([]float64, B_eval)
+        bufEval := make([]float64, B_eval)
+        for j := 0; j &lt; B_eval; j++ </span><span class="cov8" title="1">{
+                for i := 0; i &lt; B_eval; i++ </span><span class="cov8" title="1">{
+                        distSq := 0.0
+                        for d := 0; d &lt; dim; d++ </span><span class="cov8" title="1">{
+                                diff := evalX[i][d] - evalY[j][d]
+                                distSq += diff * diff
+                        }</span>
+                        <span class="cov8" title="1">bufEval[i] = (uEval[i] - distSq) * invEps</span>
+                }
+                <span class="cov8" title="1">vEval[j] = -eps * (LogSumExp(bufEval) - math.Log(float64(B_eval)))</span>
+        }
+
+        <span class="cov8" title="1">meanU := 0.0
+        for _, u_i := range uEval </span><span class="cov8" title="1">{ meanU += u_i }</span>
+        <span class="cov8" title="1">meanU /= float64(B_eval)
+
+        meanV := 0.0
+        for _, v_j := range vEval </span><span class="cov8" title="1">{ meanV += v_j }</span>
+        <span class="cov8" title="1">meanV /= float64(B_eval)
+
+        return meanU + meanV, nil</span>
+}</pre>
+
+		<pre class="file" id="file1" style="display: none">package main
+
+import (
+        "fmt"
+        "math/rand"
+
+        "algoscale"
+)
+
+func main() <span class="cov0" title="0">{
+        fmt.Println("Memulai Pengujian Terpadu algoscale...")
+
+        // 1. Inversi Matriks
+        A := algoscale.NewMatrix(2, 2)
+        A.Set(0, 0, 4); A.Set(0, 1, 7)
+        A.Set(1, 0, 2); A.Set(1, 1, 6)
+        invA, _ := algoscale.InvertSmallMatrix(A)
+        fmt.Printf("[1] Inversi Selesai: A^-1[0,0] = %.2f\n", invA.At(0, 0))
+
+        // 2. Unbalanced Sinkhorn
+        K := algoscale.NewMatrix(2, 2)
+        K.Set(0, 0, 0.9); K.Set(0, 1, 0.3)
+        K.Set(1, 0, 0.3); K.Set(1, 1, 0.9)
+        resUnb, _ := algoscale.UnbalancedSinkhorn(K, []float64{0.5, 0.5}, []float64{0.4, 0.6},
+                algoscale.UnbalancedConfig{Epsilon: 0.1, Tau1: 1.0, Tau2: 1.0, MaxIterations: 100, Tolerance: 1e-4})
+        fmt.Printf("[2] Unbalanced Converged: %t\n", resUnb.Converged)
+
+        // 3. Matrix-Free Log-Domain Sinkhorn
+        costFn := func(i, j int) float64 </span><span class="cov0" title="0">{ return float64((i - j) * (i - j)) * 0.1 }</span>
+        <span class="cov0" title="0">resLog, _ := algoscale.LogSinkhornStreaming(4, 4,
+                []float64{-1.38, -1.38, -1.38, -1.38}, []float64{-1.38, -1.38, -1.38, -1.38},
+                costFn, algoscale.LogSinkhornConfig{Epsilon: 0.1, Tau1: 1.0, Tau2: 1.0, MaxIterations: 100, Tolerance: 1e-4})
+        fmt.Printf("[3] Log-Domain Matrix-Free Converged: %t\n", resLog.Converged)
+
+        // 4. Debiased Sinkhorn Divergence
+        pts1 := [][]float64{{0, 0}, {1, 1}}
+        pts2 := [][]float64{{2, 2}, {3, 3}}
+        euclid := func(a, b []float64) float64 </span><span class="cov0" title="0">{ return (a[0]-b[0])*(a[0]-b[0]) + (a[1]-b[1])*(a[1]-b[1]) }</span>
+        <span class="cov0" title="0">div, _ := algoscale.SinkhornDivergence(pts1, pts2, euclid, algoscale.LogSinkhornConfig{Epsilon: 0.2, MaxIterations: 50, Tolerance: 1e-4})
+        fmt.Printf("[4] Debiased Metric Distance: %f\n", div)
+
+        // 5. Wasserstein Barycenters
+        resBar, _ := algoscale.ComputeBarycenterLogDomain([][]float64{{1, 0, 0}, {0, 0, 1}}, []float64{0.5, 0.5},
+                costFn, 3, 3, algoscale.BarycenterConfig{Epsilon: 1.0, MaxIterations: 100, Tolerance: 1e-4})
+        fmt.Printf("[5] Barycenter Mean Vector: %v\n", resBar.Barycenter)
+
+        // 6. Stochastic Streaming Sinkhorn (Jutaan Titik)
+        sX := func(n int) [][]float64 </span><span class="cov0" title="0">{
+                res := make([][]float64, n)
+                for i := range res </span><span class="cov0" title="0">{ res[i] = []float64{rand.NormFloat64()} }</span>
+                <span class="cov0" title="0">return res</span>
+        }
+        <span class="cov0" title="0">sY := func(n int) [][]float64 </span><span class="cov0" title="0">{
+                res := make([][]float64, n)
+                for i := range res </span><span class="cov0" title="0">{ res[i] = []float64{rand.NormFloat64() + 2.0} }</span>
+                <span class="cov0" title="0">return res</span>
+        }
+        <span class="cov0" title="0">costStoch, _ := algoscale.StreamingContinuousSinkhorn(sX, sY, 1,
+                algoscale.StreamingConfig{Epsilon: 0.2, BatchSize: 64, Steps: 100, NumFeatures: 64, LearningRate: 0.05})
+        fmt.Printf("[6] Stochastic Streaming Cost: %f\n", costStoch)</span>
+}</pre>
+
+		</div>
+	</body>
+	<script>
+	(function() {
+		var files = document.getElementById('files');
+		var visible;
+		files.addEventListener('change', onChange, false);
+		function select(part) {
+			if (visible)
+				visible.style.display = 'none';
+			visible = document.getElementById(part);
+			if (!visible)
+				return;
+			files.value = part;
+			visible.style.display = 'block';
+			location.hash = part;
+		}
+		function onChange() {
+			select(files.value);
+			window.scrollTo(0, 0);
+		}
+		if (location.hash != "") {
+			select(location.hash.substr(1));
+		}
+		if (!visible) {
+			select("file0");
+		}
+	})();
+	</script>
+</html>
